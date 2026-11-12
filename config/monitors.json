@@ -1,0 +1,8 @@
+{
+  "settings": {
+    "maxConcurrency": 8,
+    "defaultIntervalSeconds": 60,
+    "maxOutputChars": 4000
+  },
+  "monitors": {}
+}

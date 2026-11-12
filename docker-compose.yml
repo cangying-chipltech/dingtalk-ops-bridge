@@ -1,0 +1,32 @@
+x-common: &common
+  build:
+    context: .
+  image: dingtalk-ops-bridge:latest
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - ./config:/app/config:ro
+    - ./data:/app/data
+    - ./plugins:/app/plugins:ro
+
+services:
+  bridge:
+    <<: *common
+    container_name: dingtalk-ops-bridge
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./plugins:/app/plugins:ro
+      - dws-data:/var/lib/dws
+      - dws-keychain:/root/.local/share/dws-cli
+
+  monitor:
+    <<: *common
+    container_name: dingtalk-ops-monitor
+    entrypoint: ["python3", "-m", "dingtalk_ops_bridge", "monitor"]
+
+volumes:
+  dws-data:
+  dws-keychain:

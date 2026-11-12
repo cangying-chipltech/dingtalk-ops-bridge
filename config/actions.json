@@ -1,0 +1,52 @@
+{
+  "settings": {
+    "maxConcurrency": 8,
+    "maxOutputChars": 3600,
+    "maxReplyChars": 12000
+  },
+  "actions": {
+    "disk": {
+      "description": "查看磁盘使用情况",
+      "command": ["df", "-hP"],
+      "timeoutSeconds": 15
+    },
+    "memory": {
+      "description": "查看内存使用情况",
+      "command": ["free", "-m"],
+      "timeoutSeconds": 15
+    },
+    "load": {
+      "description": "查看系统负载",
+      "command": ["cat", "/proc/loadavg"],
+      "timeoutSeconds": 10
+    },
+    "uptime": {
+      "description": "查看运行时间",
+      "command": ["uptime"],
+      "timeoutSeconds": 10
+    },
+    "processes": {
+      "description": "按 CPU 排序查看进程",
+      "command": ["ps", "-eo", "pid,pcpu,pmem,comm", "--sort=-pcpu"],
+      "timeoutSeconds": 15
+    },
+    "ping": {
+      "description": "Ping 指定主机（示例动作）",
+      "command": ["ping", "-c", "3", "-W", "2", "{host}"],
+      "timeoutSeconds": 20,
+      "parameters": {
+        "host": {
+          "description": "IPv4、IPv6 或域名",
+          "required": true,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$"
+        }
+      }
+    }
+  },
+  "batches": {
+    "health": {
+      "description": "基础主机健康检查",
+      "actions": ["disk", "memory", "load", "uptime"]
+    }
+  }
+}

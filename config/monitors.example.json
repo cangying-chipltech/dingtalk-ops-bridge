@@ -1,0 +1,61 @@
+{
+  "settings": {
+    "maxConcurrency": 8,
+    "defaultIntervalSeconds": 60,
+    "maxOutputChars": 4000
+  },
+  "monitors": {
+    "api-health": {
+      "description": "HTTP 接口健康检查",
+      "check": {
+        "type": "http",
+        "url": "https://example.com/",
+        "method": "GET",
+        "expectedStatus": [200],
+        "bodyContains": ["Example Domain"]
+      },
+      "intervalSeconds": 60,
+      "timeoutSeconds": 10,
+      "severity": "critical",
+      "repeatAlertSeconds": 900,
+      "notifyRecovery": true,
+      "enabled": true
+    },
+    "redis-port": {
+      "description": "TCP 端口存活检查",
+      "check": {
+        "type": "tcp",
+        "host": "10.0.0.20",
+        "port": 6379
+      },
+      "intervalSeconds": 30,
+      "timeoutSeconds": 5,
+      "severity": "warning",
+      "enabled": false
+    },
+    "local-disk": {
+      "description": "本地磁盘使用率检查",
+      "check": {
+        "type": "command",
+        "command": ["sh", "-c", "test $(df -P / | awk 'NR==2 {gsub(/%/,\"\",$5); print $5}') -lt 90"],
+        "expectedExitCodes": [0]
+      },
+      "intervalSeconds": 300,
+      "timeoutSeconds": 15,
+      "severity": "critical",
+      "enabled": false
+    },
+    "remote-process": {
+      "description": "通过 SSH 检查远端进程",
+      "check": {
+        "type": "command",
+        "command": ["ssh", "-o", "BatchMode=yes", "ops@10.0.0.10", "pgrep", "-f", "my-service"],
+        "expectedExitCodes": [0]
+      },
+      "intervalSeconds": 60,
+      "timeoutSeconds": 15,
+      "severity": "warning",
+      "enabled": false
+    }
+  }
+}
