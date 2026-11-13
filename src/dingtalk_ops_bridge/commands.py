@@ -4,7 +4,12 @@ import shlex
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .action_api import RESOURCE_CONFIG_DIR, ActionContext
+from .action_api import (
+    RESERVED_COMMAND_PREFIXES,
+    RESOURCE_CONFIG_DIR,
+    ActionContext,
+    ActionRegistry,
+)
 from .actions import (
     ActionCatalog,
     ActionError,
@@ -45,13 +50,14 @@ def handle_prompt(
     if not normalized:
         return format_help(action_catalog)
 
-    plugin_output = _handle_plugin_command(normalized, action_catalog)
-    if plugin_output is not None:
-        return plugin_output
-
     parts = normalized.split(maxsplit=1)
     command = parts[0].lower()
     rest = parts[1] if len(parts) > 1 else ""
+
+    if command not in RESERVED_COMMAND_PREFIXES:
+        plugin_output = _handle_plugin_command(normalized, action_catalog)
+        if plugin_output is not None:
+            return plugin_output
 
     if command in HELP_COMMANDS:
         return format_help(action_catalog)
@@ -62,9 +68,15 @@ def handle_prompt(
     if command in BATCH_COMMANDS:
         return _handle_batch(rest, action_catalog)
     if command in MONITOR_COMMANDS:
-        return _handle_monitor(rest, monitors_path)
+        return _handle_monitor(rest, monitors_path, action_catalog.registry)
+    if command == "bridge":
+        return _handle_bridge(rest, monitors_path, action_catalog.registry)
     if command in STATUS_COMMANDS:
-        return _handle_monitor(f"check {rest}".strip(), monitors_path)
+        return _handle_monitor(
+            f"check {rest}".strip(),
+            monitors_path,
+            action_catalog.registry,
+        )
     return "\n".join(
         [
             f"### 未知命令：`{_inline(command)}`",
@@ -78,6 +90,18 @@ def format_help(catalog: ActionCatalog) -> str:
     actions = ", ".join(f"`{name}`" for name in sorted(catalog.actions))
     batches = ", ".join(f"`{name}`" for name in sorted(catalog.batches)) or "-"
     plugin_help = _plugin_help_lines(catalog)
+    commands = [
+        "- `help`：显示帮助",
+        "- `list`：列出动作与批处理",
+        "- `run <动作>[,<动作>] [key=value ...]`：并发执行动作",
+        "- `batch <批处理> [key=value ...]`：并发执行预置动作组",
+        "- `monitor list`：列出监控项",
+        "- `monitor check [名称,...]`：立即执行监控检查",
+        "- `check`：立即执行全部已启用监控",
+        "- `bridge status`：显式执行框架监控检查，插件无法占用",
+    ]
+    if catalog.registry.command_route("status") is None:
+        commands.append("- `status`：立即执行全部已启用监控")
     return "\n".join(
         [
             "### DingTalk Ops Bridge",
@@ -85,14 +109,7 @@ def format_help(catalog: ActionCatalog) -> str:
             "接收钉钉指令，并发执行预置动作，并返回汇总结果。",
             "",
             "**命令**",
-            "- `help`：显示帮助",
-            "- `list`：列出动作与批处理",
-            "- `run <动作>[,<动作>] [key=value ...]`：并发执行动作",
-            "- `batch <批处理> [key=value ...]`：并发执行预置动作组",
-            "- `monitor list`：列出监控项",
-            "- `monitor check [名称,...]`：立即执行监控检查",
-            "- `check`：立即执行全部已启用监控",
-            "- `status`：监控检查；若插件注册了同名命令，优先由插件处理",
+            *commands,
             *(["", "**插件命令**", *plugin_help] if plugin_help else []),
             "",
             f"**动作**：{actions}",
@@ -253,9 +270,13 @@ def _handle_batch(
         return _usage_error(str(exc))
 
 
-def _handle_monitor(rest: str, monitors_path: Path | None) -> str:
+def _handle_monitor(
+    rest: str,
+    monitors_path: Path | None,
+    registry: ActionRegistry | None = None,
+) -> str:
     try:
-        catalog = load_monitor_catalog(monitors_path)
+        catalog = load_monitor_catalog(monitors_path, registry=registry)
         tokens = _split(rest)
         subcommand = tokens[0].lower() if tokens else "check"
         if subcommand in {"list", "列表"}:
@@ -270,6 +291,18 @@ def _handle_monitor(rest: str, monitors_path: Path | None) -> str:
         return format_monitor_checks(checks)
     except (ActionError, MonitorError, ValueError) as exc:
         return _usage_error(str(exc))
+
+
+def _handle_bridge(
+    rest: str,
+    monitors_path: Path | None,
+    registry: ActionRegistry | None = None,
+) -> str:
+    tokens = _split(rest)
+    subcommand = tokens[0].lower() if tokens else "status"
+    if subcommand not in {"status", "check", "状态", "检查"}:
+        return _usage_error("bridge 支持 `bridge status` 或 `bridge check`。")
+    return _handle_monitor("check", monitors_path, registry)
 
 
 def _normalize_prompt(prompt: str) -> str:
@@ -287,16 +320,22 @@ def _handle_plugin_command(
     catalog: ActionCatalog,
 ) -> str | None:
     context = _action_context(catalog)
-    for provider in catalog.registry.commands():
-        try:
-            result = provider.handle(prompt, context)
-        except ActionError as exc:
-            return _usage_error(str(exc))
-        except Exception as exc:
-            return _usage_error(f"插件命令执行失败：{exc}")
-        if result is not None:
-            return result
-    return None
+    registration = catalog.registry.command_route(prompt)
+    required = registration is not None
+    if registration is None:
+        registration = catalog.registry.command_fallback()
+        if registration is None:
+            return None
+    try:
+        result = registration.provider.handle(prompt, context)
+    except ActionError as exc:
+        return _usage_error(str(exc))
+    except Exception as exc:
+        return _usage_error(f"插件命令执行失败：{exc}")
+    if result is None and required:
+        prefix = prompt.strip().split(maxsplit=1)[0]
+        return _usage_error(f"插件命令 `{prefix}` 未返回结果，请检查插件配置。")
+    return result
 
 
 def _action_context(catalog: ActionCatalog) -> ActionContext:

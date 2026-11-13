@@ -148,6 +148,8 @@ class SweRunnerActionProvider:
 
 class SweRunnerCommandProvider:
     api_version = PLUGIN_API_VERSION
+    command_prefixes = ("swe-runner",)
+    command_fallback = True
 
     def handle(self, prompt: str, context: ActionContext) -> str | None:
         text = (prompt or "").strip()
@@ -171,18 +173,6 @@ class SweRunnerCommandProvider:
         if not forced:
             if command in FRAMEWORK_COMMANDS:
                 return None
-            if command in DEFAULT_STATUS_COMMANDS and not rest:
-                catalog = _load_catalog(context)
-                default = catalog.default_target()
-                return _run_status(default, False, catalog.settings, context) if default else None
-            if command in HISTORY_COMMANDS and not rest:
-                catalog = _load_catalog(context)
-                default = catalog.default_target()
-                if default is not None:
-                    return _run_status(default, True, catalog.settings, context)
-                if not catalog.targets:
-                    return None
-                raise SweRunnerError("history 需要先配置 swe-runner 默认目标。")
 
         catalog = _load_catalog(context)
         if forced and command in HELP_COMMANDS:
@@ -193,12 +183,18 @@ class SweRunnerCommandProvider:
         if forced and command in STATUS_COMMANDS:
             default = catalog.default_target()
             if default is None:
-                raise SweRunnerError("swe-runner 需要配置默认目标或指定目标。")
+                raise SweRunnerError(
+                    "需要先配置 swe-runner 默认目标或指定目标；"
+                    "监控检查请使用 check 或 bridge status。"
+                )
             return _run_status(default, command in HISTORY_COMMANDS, catalog.settings, context)
         if forced and command in HISTORY_COMMANDS:
             default = catalog.default_target()
             if default is None:
-                raise SweRunnerError("history 需要先配置 swe-runner 默认目标。")
+                raise SweRunnerError(
+                    "history 需要先配置 swe-runner 默认目标；"
+                    "监控检查请使用 check 或 bridge status。"
+                )
             return _run_status(default, True, catalog.settings, context)
         if forced:
             return _format_help(catalog)
@@ -206,9 +202,10 @@ class SweRunnerCommandProvider:
 
     def help_lines(self) -> Sequence[str]:
         return (
-            "- `status` / `query` / `s` / `q`：swe-runner 默认目标状态",
-            "- `history` / `recent` / `details`：swe-runner 默认目标历史",
-            "- `<目标> status|history`：按目标 key 或别名查询",
+            "- `swe-runner status|query|s|q`：默认目标状态",
+            "- `swe-runner history|recent|details`：默认目标历史",
+            "- `swe-runner <目标> status|history`：按目标 key 或别名查询",
+            "- `<目标> status|history`：兼容旧 bridge 的目标优先写法",
             "- `swe-runner help`：swe-runner 插件帮助",
         )
 

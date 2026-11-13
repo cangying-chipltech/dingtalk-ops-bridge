@@ -36,6 +36,7 @@ class NodeDefinition:
     user: str
     port: int = 22
     password_env: str | None = None
+    password_file: str | None = None
     identity_file: str | None = None
     known_hosts_file: str | None = None
     strict_host_key_checking: str = "accept-new"
@@ -47,6 +48,8 @@ class NodeDefinition:
         methods: list[str] = []
         if self.password_env:
             methods.append("password-env")
+        if self.password_file:
+            methods.append("password-file")
         if self.identity_file:
             methods.append("key")
         return "+".join(methods) if methods else "ssh-agent/default-key"
@@ -68,12 +71,15 @@ class NodeDefinition:
         ]
         if self.identity_file:
             args.extend(["-i", self.identity_file])
-        if not self.password_env:
+        uses_password = bool(self.password_env or self.password_file)
+        if not uses_password:
             args.extend(["-o", "BatchMode=yes"])
         args.extend([f"{self.user}@{self.host}", remote_command])
 
         if self.password_env:
             return ("sshpass", "-e", *args), {"SSHPASS": f"${{{self.password_env}}}"}
+        if self.password_file:
+            return ("sshpass", "-f", self.password_file, *args), {}
         return tuple(args), {}
 
     def to_info(self) -> "NodeInfo":
@@ -137,6 +143,10 @@ class NodeService:
             raise ActionValidationError(
                 f"node {name!r} password environment variable {node.password_env} is not set"
             )
+        if node.password_file and not Path(node.password_file).is_file():
+            raise ActionValidationError(
+                f"node {name!r} password file does not exist: {node.password_file}"
+            )
         command, env = node.ssh_command(remote_command)
         return SshCommand(argv=command, env=env, node=node.to_info())
 
@@ -188,6 +198,7 @@ class NodeActionProvider:
 
 class NodeCommandProvider:
     api_version = PLUGIN_API_VERSION
+    command_prefixes = tuple(sorted(NODE_COMMANDS))
 
     def handle(self, prompt: str, context: ActionContext) -> str | None:
         text = (prompt or "").strip()
@@ -247,7 +258,8 @@ def _load_catalog(context: ActionContext) -> NodeCatalog:
         for forbidden in ("password", "passphrase", "secret"):
             if forbidden in item:
                 raise NodePluginError(
-                    f"node {name!r} must not contain {forbidden!r}; use passwordEnv with a container environment variable"
+                    f"node {name!r} must not contain {forbidden!r}; use passwordEnv "
+                    "or passwordFile"
                 )
 
         host = str(item.get("host", "")).strip()
@@ -265,6 +277,11 @@ def _load_catalog(context: ActionContext) -> NodeCatalog:
         if password_env and ENV_NAME_RE.fullmatch(password_env) is None:
             raise NodePluginError(
                 f"node {name!r} passwordEnv must be a valid environment variable name"
+            )
+        password_file = _resolve_optional_path(source.parent, item.get("passwordFile"))
+        if password_env and password_file:
+            raise NodePluginError(
+                f"node {name!r} must use only one of passwordEnv or passwordFile"
             )
         identity_file = _resolve_optional_path(source.parent, item.get("identityFile"))
         known_hosts_file = _resolve_optional_path(source.parent, item.get("knownHostsFile"))
@@ -290,6 +307,7 @@ def _load_catalog(context: ActionContext) -> NodeCatalog:
             user=user,
             port=port,
             password_env=password_env,
+            password_file=password_file,
             identity_file=identity_file,
             known_hosts_file=known_hosts_file,
             strict_host_key_checking=strict,

@@ -23,7 +23,8 @@ docker compose down
 docker compose up -d --force-recreate
 ```
 
-`config/` 以只读方式挂载，修改动作、节点、兼容目标或监控配置后无需重建镜像；下一次命令请求或监控周期会读取新配置。
+`config/` 和 `plugins/` 以只读方式挂载，修改动作、节点、模型、插件监控或静态监控配置后
+无需重建镜像；重启 `bridge monitor` 后，新命令请求和监控周期会读取更新后的插件定义。
 
 ## 数据与卷
 
@@ -62,6 +63,7 @@ docker compose start monitor
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s plugins/nodes/tests -v
+PYTHONPATH=src python3 -m unittest discover -s plugins/model-manager/tests -v
 PYTHONPATH=src python3 -m unittest discover -s plugins/swe-runner/tests -v
 ```
 
@@ -84,7 +86,9 @@ docker compose config
 - 优先使用钉钉加签、关键词或 IP 白名单中的至少一种 Webhook 安全方式。
 - 动作是白名单执行模型，但参数仍应使用严格正则和较小取值范围。
 - 不要在 `sh -c` 字符串中直接拼接钉钉输入；需要 shell 时，让脚本接收独立 argv 并自行校验。
-- 节点密码只通过 `passwordEnv` 引用 `.env` 中的变量；节点 JSON 中出现明文 `password` 会被拒绝。
+- 节点密码使用 `passwordEnv` 引用环境变量，或使用 `passwordFile` 引用 `/app/data/secrets/`
+  下的 `600` 权限文件；节点 JSON 中出现明文 `password` 会被拒绝。`passwordFile` 每次执行
+  重新读取，可无重启轮换；修改 `.env` 环境变量则需要重建容器。
 - SSH 私钥放在 `data/ssh/` 并设为 `600`，不要放进 `config/`，否则会被构建进镜像。
 - 生产环境建议使用 `strictHostKeyChecking=yes` 并提前维护 known_hosts；`accept-new` 适合首次接入。
 - 为每个动作设置最小必要超时，避免任务长期占用机器人连接。
@@ -105,6 +109,28 @@ docker compose config
 3. 检查 `DWS_UNIFIED_APP_ID`，或 `ROBOT_CLIENT_ID` 与 `ROBOT_CLIENT_SECRET` 是否成对配置。
 4. 检查 `DWS_ALLOWED_USERS`、`DWS_ALLOWED_GROUPS` 是否过滤掉了当前用户或群。
 
+### DWS 报 `/var/lib/dws/.data: no such file or directory`
+
+新 compose 项目会创建新的 `dws-data` 卷，不会自动继承旧 bridge 的 DWS 认证状态。停止
+新 bridge 后，可以把旧卷复制到当前项目卷，再启动：
+
+```bash
+docker compose stop bridge
+docker volume ls | grep dws
+docker run --rm \
+  -v <旧项目>_dws-data:/from:ro \
+  -v dingtalk-ops-bridge_dws-data:/to \
+  --entrypoint sh dingtalk-ops-bridge:latest -c 'cp -a /from/. /to/'
+docker run --rm \
+  -v <旧项目>_dws-keychain:/from:ro \
+  -v dingtalk-ops-bridge_dws-keychain:/to \
+  --entrypoint sh dingtalk-ops-bridge:latest -c 'cp -a /from/. /to/'
+docker compose up -d bridge
+docker exec dingtalk-ops-bridge dws dev connect list
+```
+
+不要把 `docker compose down -v` 用在仍需要 DWS 认证的生产环境，它会删除认证卷。
+
 ### 监控不发送 Webhook
 
 1. 执行 `PYTHONPATH=src python3 -m dingtalk_ops_bridge validate`。
@@ -121,11 +147,22 @@ docker compose config
 
 先用 `status` 或 `monitor check <名称>` 立即执行检查，再检查 `timeoutSeconds`、`expectedStatus`、`expectedExitCodes` 和命令运行环境。
 
+### 插件监控未加载
+
+1. 执行 `docker compose exec bridge python3 -m dingtalk_ops_bridge validate`，确认输出中的
+   `monitor-types` 包含插件声明的检查类型。
+2. 检查插件 manifest 是否声明 `monitorProvider`，以及 provider 是否实现
+   `monitors(context)`、`validate(check)` 和 `check(check, context)`。
+3. 确认插件 `monitors(context)` 返回的监控名称没有和 `config/monitors.json` 或其他插件重复。
+4. 模型日志监控可执行 `model list` 和 `model check <名称>`，再检查
+   `plugins/model-manager/config/models.json` 中的 `node`、`logPath` 和 `alertPatterns`。
+
 ### Action 插件未加载
 
 1. 执行 `docker compose exec bridge python3 -m dingtalk_ops_bridge validate`，确认输出中的 `types` 包含插件类型。
 2. 确认插件仓库位于宿主机 `plugins/` 目录下，并存在 `action_plugin.json`。
-3. 检查 manifest 的 `apiVersion`、`module`、`provider`、`commandProvider`、`services`、`requires` 和 `pythonPath`。
+3. 检查 manifest 的 `apiVersion`、`module`、`provider`、`commandProvider`、
+   `monitorProvider`、`services`、`requires` 和 `pythonPath`。
 4. 查看 bridge 日志中的 provider 注册或导入错误。
 5. 插件只在启动时扫描，修改后执行 `docker compose restart bridge monitor`。
 
@@ -142,7 +179,8 @@ docker compose config
 2. 执行 `docker compose exec bridge python3 -m dingtalk_ops_bridge validate`，确认 `types` 包含 `node`。
 3. 执行 `nodes` 确认节点名称，检查 `plugins/nodes/config/nodes.json` 是否已配置。
 4. 执行 `run node-login node=<名称>` 查看 SSH 错误。
-5. 检查 `.env` 中对应的密码环境变量是否已设置。
+5. 使用 `passwordEnv` 时检查 `.env` 中对应变量是否已设置；使用 `passwordFile` 时检查
+   `/app/data/secrets/` 下文件存在、可读且权限为 `600`。
 6. 使用私钥时确认 `/app/data/ssh/` 权限为 `700`、私钥为 `600`。
 7. 使用 `strictHostKeyChecking=yes` 时确认 `/app/data/known_hosts` 已包含目标主机公钥。
 
@@ -154,4 +192,5 @@ docker compose config
 4. 使用 `node` 时，确认节点存在于 `plugins/nodes/config/nodes.json`；使用旧格式时检查 `host`、`user` 是否正确。
 5. 确认 `queue`、`remoteDir` 正确，且节点插件的 `passwordEnv` 指向的变量已设置在 `.env`。
 6. 确认目标机器存在 `<remoteDir>/status_swebench.sh` 并且可执行。
-7. 使用 `<目标> status` 测试指定目标；监控检查使用 `check`，插件不会接管裸 `check`。
+7. 使用 `swe-runner <目标> status` 测试指定目标；监控检查使用 `check` 或
+   `bridge status`，插件不会接管这两个命令。

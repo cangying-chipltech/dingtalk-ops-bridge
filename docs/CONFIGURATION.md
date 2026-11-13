@@ -9,8 +9,9 @@
 | `.env` | 钉钉凭据、Webhook 和运行参数 | Compose 环境变量 |
 | `config/actions.json` | 可执行动作与批处理 | `/app/config/actions.json` |
 | `plugins/nodes/config/nodes.json` | 节点插件登录信息和认证方式 | `/app/plugins/nodes/config/nodes.json` |
+| `plugins/model-manager/config/models.json` | 模型实例、日志和插件监控定义 | `/app/plugins/model-manager/config/models.json` |
 | `plugins/swe-runner/config/swe-runner.json` | swe-runner 插件目标配置 | `/app/plugins/swe-runner/config/swe-runner.json` |
-| `config/monitors.json` | 周期监控项 | `/app/config/monitors.json` |
+| `config/monitors.json` | 框架通用设置和静态监控项 | `/app/config/monitors.json` |
 | `data/monitor-state.json` | 监控状态，自动生成 | `/app/data/monitor-state.json` |
 
 开发或测试时可以用 `CONFIG_DIR`、`ACTIONS_FILE`、`MONITORS_FILE`、`MONITOR_STATE_FILE` 和 `ACTION_PLUGIN_DIR` 覆盖默认路径。插件私有环境变量由插件文档定义。
@@ -80,13 +81,20 @@ ROBOT_CLIENT_SECRET=<robot app secret>
 | `run node-disk node=web-01` | 查看节点磁盘 |
 | `batch node-health node=web-01` | 并发执行节点登录、信息和磁盘检查 |
 | `batch health` | 并发执行预置动作组 |
+| `model list` | model-manager 插件：列出模型和关联监控项 |
+| `model check vllm-27,vllm-31` | model-manager 插件：立即检查模型日志 |
 | `monitor list` | 列出监控项 |
 | `monitor check api-health,redis-port` | 立即执行指定检查 |
-| `status` / `history` | swe-runner 插件默认目标查询（插件未加载时 `status` 查询监控） |
-| `<目标或别名> status|history` | swe-runner 插件指定目标查询 |
+| `status` | 框架即时监控检查 |
+| `bridge status` | 框架即时监控检查；即使插件占用了 `status` 也可用 |
+| `swe-runner status` / `swe-runner history` | swe-runner 插件默认目标查询 |
+| `<目标或别名> status|history` | 兼容旧 bridge 的 swe-runner 指定目标查询 |
 | `check` | 立即执行全部已启用检查；始终由框架处理 |
 
-命令支持 `ops` 前缀。加载 swe-runner 插件且配置了默认目标时，裸 `status` 优先交给插件；否则回退为即时监控检查。裸 `check` 不会被插件接管，旧语义请用 `swe-runner check`、`query` 或 `<目标> check`。
+命令支持 `ops` 前缀。插件状态命令应带插件前缀，例如 `swe-runner status`；裸 `status`
+默认执行监控检查。若插件显式声明并占用了 `status`，可使用保留命令 `bridge status`
+执行框架监控检查。裸 `check` 也始终由框架处理；旧 swe-runner 语义请用
+`swe-runner check`、`swe-runner query` 或 `<目标> check`。
 
 ## 节点登录配置
 
@@ -126,12 +134,18 @@ ROBOT_CLIENT_SECRET=<robot app secret>
 | `user` | 必填，SSH 用户 |
 | `port` | 默认 22 |
 | `passwordEnv` | 密码所在环境变量名，不能直接写 `password` |
+| `passwordFile` | 密码文件路径，使用 `sshpass -f` 在每次执行时读取；与 `passwordEnv` 二选一 |
 | `identityFile` | SSH 私钥路径，相对路径以节点配置文件所在目录为基准 |
 | `knownHostsFile` | known_hosts 文件，默认 `DATA_DIR/known_hosts`（容器内为 `/app/data/known_hosts`） |
 | `strictHostKeyChecking` | `accept-new`、`yes` 或 `no`，默认 `accept-new` |
 | `connectTimeoutSeconds` | SSH 连接超时，默认 10 秒 |
 
-密码模式使用 `sshpass -e`，密码通过 `SSHPASS` 环境变量传入，不会出现在命令行参数或动作反馈中。`nodes` 命令也不会显示密码或环境变量值。插件私有变量 `NODES_CONFIG` 可覆盖配置文件路径，旧 `NODES_FILE` 仍兼容。
+`passwordEnv` 模式使用 `sshpass -e`，密码通过 `SSHPASS` 环境变量传入。`passwordFile`
+模式使用 `sshpass -f`，每次 SSH 执行时重新读取文件，因此轮换密码不需要重启服务；
+修改 `.env` 中的环境变量则仍需重建容器。两种模式都不会把密码写入命令行参数或动作
+反馈，`nodes` 命令也不会显示密码、环境变量值或密码文件路径。密码文件建议放在
+`data/secrets/`、权限设为 `600`，并通过临时文件加 `mv` 原子替换。插件私有变量
+`NODES_CONFIG` 可覆盖配置文件路径，旧 `NODES_FILE` 仍兼容。
 
 私钥建议放在 `data/ssh/`，该目录不会被打进镜像：
 
@@ -148,6 +162,37 @@ chmod 600 data/ssh/id_ed25519_worker
 - `node-login`：执行 `hostname`，验证登录。
 - `node-info`：执行 `hostname && uptime && whoami`。
 - `node-disk`：执行 `df -hP`。
+
+## 模型管理插件配置
+
+模型实例和日志监控由 `plugins/model-manager/` 管理。默认读取
+`plugins/model-manager/config/models.json`，可用 `MODEL_MANAGER_CONFIG` 覆盖：
+
+```json
+{
+  "models": {
+    "vllm-27": {
+      "description": "27 节点 vLLM 日志监控",
+      "node": "hangdian2-27",
+      "logPath": "/data/applogs/vllm.log",
+      "tailLines": 10,
+      "alertPatterns": ["No available shared memory broadcast"],
+      "monitorName": "vllm-shared-memory-27",
+      "intervalSeconds": 60,
+      "timeoutSeconds": 20,
+      "severity": "critical",
+      "repeatAlertSeconds": 0,
+      "notifyRecovery": true,
+      "enabled": true
+    }
+  }
+}
+```
+
+`node` 引用 nodes 插件中的节点，密码和 SSH 参数由节点配置统一管理。`monitorName` 可选；
+省略时监控名为 `model-manager-<模型名>-log`。插件根据模型配置生成 `model-log` 监控项，
+命中 `alertPatterns` 时由框架发送钉钉告警。完整说明见
+`plugins/model-manager/README.md`。
 
 ## swe-runner 插件配置
 
@@ -260,10 +305,13 @@ provider 需要实现两个方法：
 `config/actions.json` 合并。插件文件中的 `settings` 会被忽略，action/batch 名称不能重复。
 nodes 插件的节点动作和 `node-health` 批处理就是这样分发的。
 
-插件还可以在 manifest 中通过 `commandProvider` 注册命令处理器，在 `run`、`batch`
-等框架命令之前接收钉钉文本。命令处理器必须返回 Markdown 字符串，或返回 `None`
-表示不接管该命令。nodes 插件用这种方式提供 `nodes` 命令，swe-runner 插件用这种方式
-兼容 `status`、`history` 和 `69 status` 等旧 bridge 命令。
+插件还可以在 manifest 中通过 `commandProvider` 注册命令处理器。provider 用
+`command_prefixes` 声明确定性的首 token 路由；动态命令可声明唯一的
+`command_fallback = True`。重复前缀、框架保留命令和多个 fallback 会在启动时失败，
+不再依赖 manifest 扫描顺序。命中显式前缀时，命令处理器返回 Markdown 表示完成，返回
+`None` 则视为插件未处理并报错，不会回退到框架；只有 fallback 返回 `None` 才继续由
+框架处理。nodes 插件提供 `nodes` 命令，swe-runner 通过固定路由和 fallback 兼容
+`status`、`history` 和 `69 status` 等旧 bridge 命令。
 
 插件间依赖使用 manifest 的 `services`/`requires`。加载器会拓扑排序并在启动时拒绝缺失
 服务、重复服务和循环依赖；消费者通过 `context.require_service("<名称>")` 调用，不能
@@ -298,6 +346,11 @@ docker compose restart bridge monitor
 ```
 
 ## 监控配置
+
+`config/monitors.json` 可保留通用 `settings` 和框架内置的 `http`、`tcp`、`command`
+检查。插件也可以通过 manifest 的 `monitorProvider` 自带监控定义；框架会把插件监控与
+此文件合并，同名监控和未知检查类型会在启动期报错。模型日志监控由
+`model-manager` 插件生成，因此默认配置中的 `monitors` 可以为空。
 
 常用格式：
 
@@ -370,6 +423,12 @@ docker compose restart bridge monitor
 
 命令检查也建议使用 argv 数组；需要 shell 管道时显式写成 `["sh", "-c", "..."]`，并确保命令内容来自可信配置，而不是钉钉输入。
 
+### 插件检查
+
+插件监控项的 `check.type` 使用 monitor provider 的 `type_name`，其余字段由插件自行校验。
+例如 model-manager 使用 `{"type": "model-log", "model": "vllm-27"}`。插件检查的异常、
+恢复、重复提醒和状态持久化与内置检查一致。
+
 ## 告警与状态
 
 - 正常到失败：立即发送异常通知。
@@ -383,5 +442,6 @@ docker compose restart bridge monitor
 ```bash
 PYTHONPATH=src python3 -m dingtalk_ops_bridge validate
 PYTHONPATH=src python3 -m dingtalk_ops_bridge command help
+PYTHONPATH=src python3 -m dingtalk_ops_bridge command 'model list'
 PYTHONPATH=src python3 -m dingtalk_ops_bridge monitor --once --dry-run
 ```

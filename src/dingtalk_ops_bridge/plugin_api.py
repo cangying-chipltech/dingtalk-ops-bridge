@@ -10,6 +10,7 @@ from .action_api import (
     PLUGIN_COMMAND_ENTRYPOINT_GROUP,
     PLUGIN_ENTRYPOINT_GROUP,
     RESOURCE_CONFIG_DIR,
+    RESERVED_COMMAND_PREFIXES,
     ActionContext,
     ActionDefinition,
     ActionError,
@@ -18,6 +19,8 @@ from .action_api import (
     ActionResult,
     ActionValidationError,
     CommandProvider,
+    MonitorProvider,
+    MonitorResult,
     ParameterDefinition,
     PreparedAction,
 )
@@ -29,6 +32,7 @@ __all__ = [
     "PLUGIN_COMMAND_ENTRYPOINT_GROUP",
     "PLUGIN_ENTRYPOINT_GROUP",
     "RESOURCE_CONFIG_DIR",
+    "RESERVED_COMMAND_PREFIXES",
     "ActionContext",
     "ActionDefinition",
     "ActionError",
@@ -37,6 +41,8 @@ __all__ = [
     "ActionResult",
     "ActionValidationError",
     "CommandProvider",
+    "MonitorProvider",
+    "MonitorResult",
     "ParameterDefinition",
     "PreparedAction",
 ]

@@ -60,7 +60,11 @@ class CommandTests(unittest.TestCase):
         return handle_prompt(prompt, self.catalog, monitors_path=self.monitors_path)
 
     def test_help_and_list(self):
-        self.assertIn("DingTalk Ops Bridge", self._handle("help"))
+        help_output = self._handle("help")
+        self.assertIn("DingTalk Ops Bridge", help_output)
+        self.assertIn("- `status`：立即执行全部已启用监控", help_output)
+        self.assertIn("- `bridge status`：显式执行框架监控检查", help_output)
+        self.assertNotIn("插件未接管时执行监控检查", help_output)
         self.assertIn("`echo`", self._handle("list"))
         self.assertIn("`both`", self._handle("actions"))
 
@@ -77,6 +81,9 @@ class CommandTests(unittest.TestCase):
         output = self._handle("status")
         self.assertIn("监控检查结果", output)
         self.assertIn("✅ ok-check", output)
+        bridge_output = self._handle("bridge status")
+        self.assertIn("监控检查结果", bridge_output)
+        self.assertIn("✅ ok-check", bridge_output)
 
     def test_unknown_and_invalid_parameter(self):
         self.assertIn("未知命令", self._handle("nope"))

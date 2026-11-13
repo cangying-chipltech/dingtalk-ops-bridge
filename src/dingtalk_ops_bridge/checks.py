@@ -12,7 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .paths import monitors_file
+from .action_api import (
+    RESOURCE_CONFIG_DIR,
+    ActionContext,
+    ActionRegistry,
+    MonitorResult,
+)
+from .paths import config_dir, monitors_file
 from .util import ProcessResult, run_process, truncate_text
 
 
@@ -45,6 +51,8 @@ class MonitorSettings:
 class MonitorCatalog:
     settings: MonitorSettings
     monitors: Mapping[str, MonitorDefinition]
+    registry: ActionRegistry | None = None
+    context: ActionContext = field(default_factory=ActionContext)
 
 
 @dataclass(frozen=True)
@@ -55,7 +63,12 @@ class CheckResult:
     duration_ms: int
 
 
-def load_monitor_catalog(path: Path | None = None) -> MonitorCatalog:
+def load_monitor_catalog(
+    path: Path | None = None,
+    *,
+    registry: ActionRegistry | None = None,
+    context: ActionContext | None = None,
+) -> MonitorCatalog:
     source = path or monitors_file()
     try:
         raw = json.loads(source.read_text(encoding="utf-8"))
@@ -80,39 +93,82 @@ def load_monitor_catalog(path: Path | None = None) -> MonitorCatalog:
 
     monitors: dict[str, MonitorDefinition] = {}
     for name, item in monitors_raw.items():
-        if not isinstance(item, dict):
-            raise MonitorError(f"monitor {name!r} must be an object")
-        check = item.get("check")
-        if not isinstance(check, dict):
-            raise MonitorError(f"monitor {name!r} requires a 'check' object")
-        check_type = str(check.get("type", "")).lower()
-        _validate_check(name, check_type, check)
-        severity = str(item.get("severity", "warning")).lower()
-        if severity not in {"info", "warning", "critical"}:
-            raise MonitorError(f"monitor {name!r} severity must be info, warning, or critical")
-        monitors[name] = MonitorDefinition(
-            name=name,
-            description=str(item.get("description", "")),
-            check_type=check_type,
-            check=check,
-            interval_seconds=_positive_float(
-                item.get("intervalSeconds", settings.default_interval_seconds),
-                f"monitor {name}.intervalSeconds",
-            ),
-            timeout_seconds=_positive_float(
-                item.get("timeoutSeconds", 10),
-                f"monitor {name}.timeoutSeconds",
-            ),
-            severity=severity,
-            repeat_alert_seconds=_non_negative_float(
-                item.get("repeatAlertSeconds", 0),
-                f"monitor {name}.repeatAlertSeconds",
-            ),
-            notify_recovery=bool(item.get("notifyRecovery", True)),
-            enabled=bool(item.get("enabled", True)),
-        )
+        monitors[name] = _parse_monitor(name, item, settings, registry=registry)
 
-    return MonitorCatalog(settings=settings, monitors=monitors)
+    if registry is not None:
+        if context is None:
+            context = _plugin_context(registry)
+        for provider in registry.monitor_providers():
+            try:
+                provided = provider.monitors(context)
+            except Exception as exc:
+                raise MonitorError(
+                    f"monitor provider {provider.type_name!r} failed to load definitions: {exc}"
+                ) from exc
+            if not isinstance(provided, Mapping):
+                raise MonitorError(
+                    f"monitor provider {provider.type_name!r} must return an object"
+                )
+            for name, item in provided.items():
+                if name in monitors:
+                    raise MonitorError(
+                        f"duplicate monitor {name!r} from provider {provider.type_name!r}"
+                    )
+                monitors[name] = _parse_monitor(name, item, settings, registry=registry)
+
+    return MonitorCatalog(
+        settings=settings,
+        monitors=monitors,
+        registry=registry,
+        context=context or ActionContext(),
+    )
+
+
+def _parse_monitor(
+    name: str,
+    item: Any,
+    settings: MonitorSettings,
+    *,
+    registry: ActionRegistry | None,
+) -> MonitorDefinition:
+    if not isinstance(item, dict):
+        raise MonitorError(f"monitor {name!r} must be an object")
+    check = item.get("check")
+    if not isinstance(check, dict):
+        raise MonitorError(f"monitor {name!r} requires a 'check' object")
+    check_type = str(check.get("type", "")).lower()
+    _validate_check(name, check_type, check, registry)
+    severity = str(item.get("severity", "warning")).lower()
+    if severity not in {"info", "warning", "critical"}:
+        raise MonitorError(f"monitor {name!r} severity must be info, warning, or critical")
+    return MonitorDefinition(
+        name=name,
+        description=str(item.get("description", "")),
+        check_type=check_type,
+        check=check,
+        interval_seconds=_positive_float(
+            item.get("intervalSeconds", settings.default_interval_seconds),
+            f"monitor {name}.intervalSeconds",
+        ),
+        timeout_seconds=_positive_float(
+            item.get("timeoutSeconds", 10),
+            f"monitor {name}.timeoutSeconds",
+        ),
+        severity=severity,
+        repeat_alert_seconds=_non_negative_float(
+            item.get("repeatAlertSeconds", 0),
+            f"monitor {name}.repeatAlertSeconds",
+        ),
+        notify_recovery=bool(item.get("notifyRecovery", True)),
+        enabled=bool(item.get("enabled", True)),
+    )
+
+
+def _plugin_context(registry: ActionRegistry) -> ActionContext:
+    return ActionContext(
+        resources={RESOURCE_CONFIG_DIR: str(config_dir())},
+        services=registry.services(),
+    )
 
 
 def select_monitors(
@@ -143,7 +199,13 @@ def execute_checks(
     results: list[tuple[MonitorDefinition, CheckResult] | None] = [None] * len(monitors)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="monitor") as pool:
         future_indexes = {
-            pool.submit(run_check, monitor, catalog.settings.max_output_chars): index
+            pool.submit(
+                run_check,
+                monitor,
+                catalog.settings.max_output_chars,
+                registry=catalog.registry,
+                context=catalog.context,
+            ): index
             for index, monitor in enumerate(monitors)
         }
         for future in as_completed(future_indexes):
@@ -156,7 +218,13 @@ def execute_checks(
     return tuple(item for item in results if item is not None)
 
 
-def run_check(monitor: MonitorDefinition, max_output_chars: int = 4000) -> CheckResult:
+def run_check(
+    monitor: MonitorDefinition,
+    max_output_chars: int = 4000,
+    *,
+    registry: ActionRegistry | None = None,
+    context: ActionContext | None = None,
+) -> CheckResult:
     started = time.monotonic()
     try:
         if monitor.check_type == "http":
@@ -165,6 +233,19 @@ def run_check(monitor: MonitorDefinition, max_output_chars: int = 4000) -> Check
             result = _run_tcp_check(monitor)
         elif monitor.check_type == "command":
             result = _run_command_check(monitor, max_output_chars)
+        elif registry is not None and registry.has_monitor_provider(monitor.check_type):
+            provider = registry.monitor_provider(monitor.check_type)
+            plugin_result = provider.check(monitor.check, context or ActionContext())
+            if not isinstance(plugin_result, MonitorResult):
+                raise TypeError(
+                    f"monitor provider {provider.type_name!r} must return MonitorResult"
+                )
+            result = CheckResult(
+                plugin_result.ok,
+                plugin_result.message,
+                plugin_result.details,
+                0,
+            )
         else:
             result = CheckResult(False, f"unsupported check type: {monitor.check_type}", "", 0)
     except Exception as exc:
@@ -256,7 +337,12 @@ def _run_command_check(monitor: MonitorDefinition, max_output_chars: int) -> Che
     return CheckResult(True, f"command exited {process.exit_code}", details, 0)
 
 
-def _validate_check(name: str, check_type: str, check: Mapping[str, Any]) -> None:
+def _validate_check(
+    name: str,
+    check_type: str,
+    check: Mapping[str, Any],
+    registry: ActionRegistry | None,
+) -> None:
     if check_type == "http":
         if not check.get("url"):
             raise MonitorError(f"monitor {name!r} HTTP check requires 'url'")
@@ -276,7 +362,20 @@ def _validate_check(name: str, check_type: str, check: Mapping[str, Any]) -> Non
         if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
             raise MonitorError(f"monitor {name!r} command check requires a non-empty string array 'command'")
         return
-    raise MonitorError(f"monitor {name!r} has unsupported check type: {check_type!r}")
+    if registry is not None and registry.has_monitor_provider(check_type):
+        provider = registry.monitor_provider(check_type)
+        try:
+            provider.validate(check)
+        except Exception as exc:
+            raise MonitorError(
+                f"monitor {name!r} failed validation in provider {provider.type_name!r}: {exc}"
+            ) from exc
+        return
+    available = ", ".join(registry.monitor_types()) if registry is not None else "-"
+    raise MonitorError(
+        f"monitor {name!r} has unsupported check type: {check_type!r}; "
+        f"plugin monitor providers: {available or '-'}"
+    )
 
 
 def _safe_url(url: str) -> str:

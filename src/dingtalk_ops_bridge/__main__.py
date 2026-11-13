@@ -8,7 +8,7 @@ import sys
 import threading
 from pathlib import Path
 
-from .actions import ActionError, load_action_catalog
+from .actions import ActionError, default_action_registry, load_action_catalog
 from .checks import MonitorError, load_monitor_catalog
 from .commands import (
     format_help,
@@ -104,11 +104,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run_monitor(args: argparse.Namespace) -> int:
     try:
-        catalog = load_monitor_catalog(args.monitors_file or monitors_file())
+        registry = default_action_registry()
+        catalog = load_monitor_catalog(
+            args.monitors_file or monitors_file(),
+            registry=registry,
+        )
         notifier = DingTalkWebhook.from_env(dry_run=args.dry_run)
         store = MonitorStateStore(args.state_file or monitor_state_file())
         runner = MonitorRunner(catalog, store, notifier)
-    except (MonitorError, NotifierError) as exc:
+    except (ActionError, MonitorError, NotifierError) as exc:
         LOGGER.error("monitor configuration error: %s", exc)
         return 1
 
@@ -143,20 +147,29 @@ def _validate(
     monitor_file: Path | None,
 ) -> int:
     failed = False
+    registry = None
     try:
         action_catalog = load_action_catalog(action_file or actions_file())
+        registry = action_catalog.registry
         print(
             f"actions: ok ({len(action_catalog.actions)} actions, "
             f"{len(action_catalog.batches)} batches; "
             f"types: {', '.join(action_catalog.registry.types())}; "
             f"commands: {len(action_catalog.registry.commands())}; "
+            f"command-routes: {', '.join(action_catalog.registry.command_prefixes()) or '-'}; "
+            f"command-fallback: "
+            f"{'yes' if action_catalog.registry.command_fallback() else 'no'}; "
+            f"monitor-types: {', '.join(action_catalog.registry.monitor_types()) or '-'}; "
             f"services: {', '.join(sorted(action_catalog.registry.services())) or '-'})"
         )
     except ActionError as exc:
         failed = True
         print(f"actions: failed ({exc})", file=sys.stderr)
     try:
-        monitor_catalog = load_monitor_catalog(monitor_file or monitors_file())
+        monitor_catalog = load_monitor_catalog(
+            monitor_file or monitors_file(),
+            registry=registry,
+        )
         enabled = sum(1 for monitor in monitor_catalog.monitors.values() if monitor.enabled)
         print(f"monitors: ok ({len(monitor_catalog.monitors)} configured, {enabled} enabled)")
     except MonitorError as exc:

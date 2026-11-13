@@ -111,7 +111,8 @@ def run_cases(root: Path, webhook_url: str) -> None:
     _expect(result.returncode == 0, _process_error(result))
     _expect("监控检查结果" in result.stdout, "未返回监控检查结果")
     _expect("❌ e2e-marker" in result.stdout, "异常监控项未显示为失败")
-    print("    PASS: check 返回 e2e-marker 异常")
+    _expect("✅ e2e-plugin-monitor" in result.stdout, "插件监控项未加载")
+    print("    PASS: check 返回 e2e-marker 异常并加载插件监控")
 
     _case("4/7 监控异常 -> 钉钉 Webhook")
     WebhookHandler.reset()
@@ -144,7 +145,7 @@ def run_cases(root: Path, webhook_url: str) -> None:
     _expect(state["monitors"]["e2e-marker"]["status"] == "ok", "监控状态没有恢复为 ok")
     print("    PASS: Webhook 收到恢复消息")
 
-    _case("7/7 外部插件自带 action/actionsFile + command")
+    _case("7/7 外部插件自带 action/actionsFile + command + monitor")
     result = run_agent(["run", "plugin-echo"], env)
     _expect(result.returncode == 0, _process_error(result))
     _expect("plugin-action-ok" in result.stdout, "外部插件动作未执行")
@@ -220,7 +221,7 @@ def write_plugin(root: Path) -> None:
     (source_dir / "e2e_action_plugin.py").write_text(
         "\n".join(
             [
-                "from dingtalk_ops_bridge.plugin_api import PLUGIN_API_VERSION, PreparedAction",
+                "from dingtalk_ops_bridge.plugin_api import PLUGIN_API_VERSION, MonitorResult, PreparedAction",
                 "",
                 "class Provider:",
                 "    api_version = PLUGIN_API_VERSION",
@@ -234,14 +235,29 @@ def write_plugin(root: Path) -> None:
                 "",
                 "class Commands:",
                 "    api_version = PLUGIN_API_VERSION",
+                "    command_prefixes = ('plugin-check',)",
                 "",
                 "    def handle(self, prompt, context):",
                 "        if prompt.strip() == 'plugin-check':",
                 "            return '### plugin-command-ok'",
                 "        return None",
                 "",
+                "class Monitors:",
+                "    api_version = PLUGIN_API_VERSION",
+                "    type_name = 'e2e-monitor'",
+                "",
+                "    def monitors(self, context):",
+                "        return {'e2e-plugin-monitor': {'check': {'type': self.type_name}, 'severity': 'info'}}",
+                "",
+                "    def validate(self, check):",
+                "        pass",
+                "",
+                "    def check(self, check, context):",
+                "        return MonitorResult(True, 'plugin monitor ok')",
+                "",
                 "PROVIDER = Provider()",
                 "COMMAND_PROVIDER = Commands()",
+                "MONITOR_PROVIDER = Monitors()",
             ]
         ),
         encoding="utf-8",
@@ -268,6 +284,7 @@ def write_plugin(root: Path) -> None:
                 "module": "e2e_action_plugin",
                 "provider": "PROVIDER",
                 "commandProvider": "COMMAND_PROVIDER",
+                "monitorProvider": "MONITOR_PROVIDER",
                 "actionsFile": "config/actions.json",
                 "pythonPath": "src",
             }

@@ -36,6 +36,76 @@ class NodePluginTests(unittest.TestCase):
             self.assertIn("ops@10.0.0.11", command)
             self.assertEqual(env, {"SSHPASS": "${TEST_NODE_PASSWORD}"})
 
+    def test_password_file_is_checked_and_read_at_execution_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            password_path = root / "web-01.password"
+            password_path.write_text("old-password\n", encoding="utf-8")
+            nodes_path = root / "nodes.json"
+            nodes_path.write_text(
+                json.dumps(
+                    {
+                        "nodes": {
+                            "web-01": {
+                                "host": "10.0.0.11",
+                                "user": "ops",
+                                "passwordFile": "web-01.password",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"NODES_CONFIG": str(nodes_path)}):
+                catalog = self.plugin._load_catalog(ActionContext())
+                ssh = self.plugin.SERVICE.ssh_command(
+                    "web-01", "hostname", ActionContext()
+                )
+            self.assertEqual(
+                ssh.argv[:4], ("sshpass", "-f", str(password_path), "ssh")
+            )
+            self.assertEqual(ssh.env, {})
+            self.assertEqual(catalog.nodes["web-01"].to_info().auth_method, "password-file")
+
+            password_path.write_text("new-password\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"NODES_CONFIG": str(nodes_path)}):
+                rotated = self.plugin.SERVICE.ssh_command(
+                    "web-01", "hostname", ActionContext()
+                )
+            self.assertEqual(rotated.argv, ssh.argv)
+            self.assertEqual(rotated.env, {})
+
+            password_path.unlink()
+            with mock.patch.dict(os.environ, {"NODES_CONFIG": str(nodes_path)}):
+                with self.assertRaises(ActionValidationError):
+                    self.plugin.SERVICE.ssh_command(
+                        "web-01", "hostname", ActionContext()
+                    )
+
+    def test_node_rejects_multiple_password_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "web-01.password").write_text("secret\n", encoding="utf-8")
+            nodes_path = root / "nodes.json"
+            nodes_path.write_text(
+                json.dumps(
+                    {
+                        "nodes": {
+                            "web-01": {
+                                "host": "10.0.0.11",
+                                "user": "ops",
+                                "passwordEnv": "TEST_NODE_PASSWORD",
+                                "passwordFile": "web-01.password",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"NODES_CONFIG": str(nodes_path)}):
+                with self.assertRaises(ActionValidationError):
+                    self.plugin._load_catalog(ActionContext())
+
     def test_plaintext_password_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "nodes.json"
@@ -151,6 +221,36 @@ class NodePluginTests(unittest.TestCase):
             self.assertIn("password-env", output)
             self.assertNotIn("TEST_NODE_PASSWORD", output)
 
+    def test_nodes_command_hides_password_file_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "web-01.password").write_text("secret\n", encoding="utf-8")
+            nodes_path = root / "nodes.json"
+            nodes_path.write_text(
+                json.dumps(
+                    {
+                        "nodes": {
+                            "web-01": {
+                                "host": "10.0.0.11",
+                                "user": "ops",
+                                "passwordFile": "web-01.password",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            actions_path = root / "actions.json"
+            actions_path.write_text(
+                json.dumps({"actions": {"hello": {"command": ["true"]}}}),
+                encoding="utf-8",
+            )
+            catalog = load_action_catalog(actions_path, registry=self.registry)
+            with mock.patch.dict(os.environ, {"NODES_CONFIG": str(nodes_path)}):
+                output = handle_prompt("nodes", catalog)
+            self.assertIn("password-file", output)
+            self.assertNotIn("web-01.password", output)
+
     def test_help_lists_nodes_plugin_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             actions_path = Path(tmp) / "actions.json"
@@ -178,6 +278,9 @@ class NodePluginTests(unittest.TestCase):
 
     def test_plugin_registers_nodes_service(self):
         self.assertIs(self.registry.service("nodes"), self.plugin.SERVICE)
+        self.assertIn("nodes", self.registry.command_prefixes())
+        self.assertIn("node", self.registry.command_prefixes())
+        self.assertIsNone(self.registry.command_fallback())
 
     def _write_nodes(self, root: Path) -> Path:
         path = root / "nodes.json"

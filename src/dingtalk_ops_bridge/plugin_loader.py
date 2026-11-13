@@ -34,6 +34,7 @@ class _PluginManifest:
     module_name: str
     provider_names: tuple[str, ...]
     command_names: tuple[str, ...]
+    monitor_names: tuple[str, ...]
     action_files: tuple[str, ...]
     python_paths: tuple[str, ...]
     services: Mapping[str, str]
@@ -92,8 +93,25 @@ def register_command_provider(
         )
     if not callable(getattr(provider, "handle", None)):
         raise ActionError(f"{source}: command provider must implement handle()")
-    registry.register_command(provider)
-    LOGGER.info("registered command provider from %s", source)
+    registry.register_command(provider, source=source)
+    registration = registry.command_registrations()[-1]
+    LOGGER.info(
+        "registered command provider from %s (prefixes=%s, fallback=%s)",
+        source,
+        ", ".join(registration.prefixes) or "-",
+        registration.fallback,
+    )
+
+
+def register_monitor_provider(
+    registry: ActionRegistry,
+    provider: Any,
+    source: str,
+) -> None:
+    if isinstance(provider, type):
+        provider = provider()
+    registry.register_monitor(provider, source=source)
+    LOGGER.info("registered monitor provider %s from %s", provider.type_name, source)
 
 
 def load_external_plugins(
@@ -173,19 +191,23 @@ def _read_manifest(manifest_path: Path) -> _PluginManifest:
     )
     has_action_provider = "providers" in manifest or "provider" in manifest
     has_command_provider = "commandProviders" in manifest or "commandProvider" in manifest
+    has_monitor_provider = "monitorProviders" in manifest or "monitorProvider" in manifest
     has_action_file = "actionsFiles" in manifest or "actionsFile" in manifest
     provider_names_raw = manifest.get("providers", manifest.get("provider"))
     command_names_raw = manifest.get("commandProviders", manifest.get("commandProvider"))
+    monitor_names_raw = manifest.get("monitorProviders", manifest.get("monitorProvider"))
     action_files_raw = manifest.get("actionsFiles", manifest.get("actionsFile"))
     if (
         not has_action_provider
         and not has_command_provider
+        and not has_monitor_provider
         and not has_action_file
         and not services
     ):
         provider_names_raw = "PROVIDER"
     provider_names = _name_list(provider_names_raw, manifest_path, "provider")
     command_names = _name_list(command_names_raw, manifest_path, "commandProvider")
+    monitor_names = _name_list(monitor_names_raw, manifest_path, "monitorProvider")
     action_files = _name_list(action_files_raw, manifest_path, "actionsFile")
     python_paths_raw = manifest.get("pythonPath", [])
     if isinstance(python_paths_raw, str):
@@ -195,9 +217,16 @@ def _read_manifest(manifest_path: Path) -> _PluginManifest:
     python_paths = tuple(
         str(item).strip() for item in python_paths_raw if str(item).strip()
     )
-    if not provider_names and not command_names and not action_files and not services:
+    if (
+        not provider_names
+        and not command_names
+        and not monitor_names
+        and not action_files
+        and not services
+    ):
         raise ActionError(
-            f"action plugin manifest {manifest_path} defines no providers, services, or action files"
+            f"action plugin manifest {manifest_path} defines no providers, services, "
+            "monitor providers, or action files"
         )
     return _PluginManifest(
         path=manifest_path,
@@ -205,6 +234,7 @@ def _read_manifest(manifest_path: Path) -> _PluginManifest:
         module_name=module_name,
         provider_names=tuple(provider_names),
         command_names=tuple(command_names),
+        monitor_names=tuple(monitor_names),
         action_files=tuple(action_files),
         python_paths=python_paths,
         services=services,
@@ -274,6 +304,7 @@ def _load_manifest(registry: ActionRegistry, plugin: _PluginManifest) -> None:
     module_name = plugin.module_name
     provider_names = plugin.provider_names
     command_names = plugin.command_names
+    monitor_names = plugin.monitor_names
     action_files = plugin.action_files
 
     plugin_root = manifest_path.parent
@@ -311,6 +342,16 @@ def _load_manifest(registry: ActionRegistry, plugin: _PluginManifest) -> None:
             )
         for item in _as_providers(provider):
             register_command_provider(registry, item, str(manifest_path))
+
+    for provider_name in monitor_names:
+        provider = getattr(module, str(provider_name), None)
+        if provider is None:
+            raise ActionError(
+                f"action plugin module {module_name!r} has no monitor provider "
+                f"{provider_name!r}"
+            )
+        for item in _as_providers(provider):
+            register_monitor_provider(registry, item, str(manifest_path))
 
     for service_name, attribute_name in plugin.services.items():
         service = getattr(module, str(attribute_name), None)

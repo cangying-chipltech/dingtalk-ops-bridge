@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 
 PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -11,6 +11,30 @@ RESOURCE_CONFIG_DIR = "config-dir"
 PLUGIN_API_VERSION = 1
 PLUGIN_ENTRYPOINT_GROUP = "dingtalk_ops_bridge.actions"
 PLUGIN_COMMAND_ENTRYPOINT_GROUP = "dingtalk_ops_bridge.commands"
+RESERVED_COMMAND_PREFIXES = frozenset(
+    {
+        "help",
+        "?",
+        "/help",
+        "h",
+        "帮助",
+        "list",
+        "actions",
+        "动作",
+        "列表",
+        "run",
+        "exec",
+        "execute",
+        "执行",
+        "batch",
+        "批处理",
+        "monitor",
+        "监控",
+        "bridge",
+        "check",
+        "检查",
+    }
+)
 
 
 class ActionError(Exception):
@@ -111,6 +135,13 @@ class ActionExecution:
 
 
 @dataclass(frozen=True)
+class MonitorResult:
+    ok: bool
+    message: str
+    details: str = ""
+
+
+@dataclass(frozen=True)
 class ActionContext:
     resources: Mapping[str, Any] = field(default_factory=dict)
     services: Mapping[str, Any] = field(default_factory=dict)
@@ -153,12 +184,38 @@ class CommandProvider(Protocol):
         """Handle a command prompt, or return None when it does not apply."""
 
 
+class MonitorProvider(Protocol):
+    api_version: int
+    type_name: str
+
+    def monitors(self, context: ActionContext) -> Mapping[str, Mapping[str, Any]]:
+        """Return plugin-owned monitor definitions keyed by monitor name."""
+
+    def validate(self, check: Mapping[str, Any]) -> None:
+        """Validate one check object handled by this provider."""
+
+    def check(self, check: Mapping[str, Any], context: ActionContext) -> MonitorResult:
+        """Execute one check and return its outcome."""
+
+
+@dataclass(frozen=True)
+class CommandRegistration:
+    provider: CommandProvider
+    source: str
+    prefixes: tuple[str, ...] = ()
+    fallback: bool = False
+
+
 class ActionRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, ActionProvider] = {}
-        self._commands: list[CommandProvider] = []
+        self._commands: list[CommandRegistration] = []
+        self._command_prefixes: dict[str, CommandRegistration] = {}
+        self._fallback_command: CommandRegistration | None = None
         self._action_files: list[Path] = []
         self._services: dict[str, Any] = {}
+        self._monitor_providers: dict[str, MonitorProvider] = {}
+        self._monitor_sources: dict[str, str] = {}
 
     def register(self, provider: ActionProvider) -> None:
         name = provider.type_name.strip().lower()
@@ -179,11 +236,93 @@ class ActionRegistry:
     def types(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))
 
-    def register_command(self, provider: CommandProvider) -> None:
-        self._commands.append(provider)
+    def register_command(
+        self,
+        provider: CommandProvider,
+        *,
+        source: str = "unknown",
+        prefixes: Iterable[str] | str | None = None,
+        fallback: bool | None = None,
+    ) -> None:
+        if isinstance(provider, type):
+            provider = provider()
+
+        declared_prefixes = (
+            getattr(provider, "command_prefixes", None)
+            if prefixes is None
+            else prefixes
+        )
+        normalized_prefixes = _normalize_command_prefixes(
+            declared_prefixes, source=source
+        )
+
+        has_fallback_setting = fallback is not None or hasattr(provider, "command_fallback")
+        declared_fallback = (
+            getattr(provider, "command_fallback", False) if fallback is None else fallback
+        )
+        if not isinstance(declared_fallback, bool):
+            raise ActionError(f"{source}: command_fallback must be a boolean")
+        if not normalized_prefixes and not declared_fallback:
+            if has_fallback_setting:
+                raise ActionError(
+                    f"{source}: command provider must declare command_prefixes "
+                    "or set command_fallback = True"
+                )
+            # Providers written before declarative routing existed remain usable
+            # when they are the only fallback in the process.
+            declared_fallback = True
+
+        registration = CommandRegistration(
+            provider=provider,
+            source=source,
+            prefixes=normalized_prefixes,
+            fallback=declared_fallback,
+        )
+        for prefix in normalized_prefixes:
+            if prefix in RESERVED_COMMAND_PREFIXES:
+                raise ActionError(
+                    f"{source}: command prefix {prefix!r} is reserved by the framework"
+                )
+            existing = self._command_prefixes.get(prefix)
+            if existing is not None:
+                raise ActionError(
+                    f"{source}: command prefix {prefix!r} conflicts with {existing.source}"
+                )
+        if declared_fallback:
+            if self._fallback_command is not None:
+                raise ActionError(
+                    f"{source}: command fallback conflicts with "
+                    f"{self._fallback_command.source}; only one fallback provider is allowed"
+                )
+            self._fallback_command = registration
+
+        self._commands.append(registration)
+        for prefix in normalized_prefixes:
+            self._command_prefixes[prefix] = registration
 
     def commands(self) -> tuple[CommandProvider, ...]:
+        return tuple(registration.provider for registration in self._commands)
+
+    def command_registrations(self) -> tuple[CommandRegistration, ...]:
         return tuple(self._commands)
+
+    def command_prefixes(self) -> tuple[str, ...]:
+        return tuple(sorted(self._command_prefixes))
+
+    def command_fallback(self) -> CommandRegistration | None:
+        return self._fallback_command
+
+    def command_route(self, prompt: str) -> CommandRegistration | None:
+        parts = (prompt or "").strip().split(maxsplit=1)
+        if not parts:
+            return None
+        return self._command_prefixes.get(parts[0].casefold())
+
+    def command_for(self, prompt: str) -> CommandRegistration | None:
+        registration = self.command_route(prompt)
+        if registration is not None:
+            return registration
+        return self._fallback_command
 
     def register_action_file(self, path: Path) -> None:
         resolved = path.resolve()
@@ -212,6 +351,54 @@ class ActionRegistry:
             )
         self._services[service_name] = service
 
+    def register_monitor(self, provider: MonitorProvider, *, source: str = "unknown") -> None:
+        if isinstance(provider, type):
+            provider = provider()
+        name = str(getattr(provider, "type_name", "")).strip().lower()
+        if not name:
+            raise ActionError(f"{source}: monitor provider must define type_name")
+        existing_source = self._monitor_sources.get(name)
+        if existing_source is not None:
+            raise ActionError(
+                f"{source}: duplicate monitor provider {name!r}; "
+                f"already registered by {existing_source}"
+            )
+        try:
+            api_version = int(provider.api_version)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ActionError(
+                f"{source}: monitor provider must define api_version={PLUGIN_API_VERSION}"
+            ) from exc
+        if api_version != PLUGIN_API_VERSION:
+            raise ActionError(
+                f"{source}: monitor provider uses API version {api_version}; "
+                f"framework expects {PLUGIN_API_VERSION}"
+            )
+        for method in ("monitors", "validate", "check"):
+            if not callable(getattr(provider, method, None)):
+                raise ActionError(f"{source}: monitor provider must implement {method}()")
+        self._monitor_providers[name] = provider
+        self._monitor_sources[name] = source
+
+    def monitor_provider(self, check_type: str) -> MonitorProvider:
+        name = check_type.strip().lower()
+        provider = self._monitor_providers.get(name)
+        if provider is None:
+            available = ", ".join(sorted(self._monitor_providers)) or "-"
+            raise ActionError(
+                f"unknown monitor provider {check_type!r}; available: {available}"
+            )
+        return provider
+
+    def has_monitor_provider(self, check_type: str) -> bool:
+        return check_type.strip().lower() in self._monitor_providers
+
+    def monitor_providers(self) -> tuple[MonitorProvider, ...]:
+        return tuple(self._monitor_providers.values())
+
+    def monitor_types(self) -> tuple[str, ...]:
+        return tuple(sorted(self._monitor_providers))
+
     def service(self, name: str) -> Any:
         service = self._services.get(name.strip().lower())
         if service is None:
@@ -224,3 +411,34 @@ class ActionRegistry:
 
     def services(self) -> Mapping[str, Any]:
         return dict(self._services)
+
+
+def _normalize_command_prefixes(
+    value: Iterable[str] | str | None,
+    *,
+    source: str,
+) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        candidates = (value,)
+    else:
+        try:
+            candidates = tuple(value)
+        except TypeError as exc:
+            raise ActionError(f"{source}: command_prefixes must be a string or sequence") from exc
+
+    prefixes: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            raise ActionError(f"{source}: command_prefixes must contain only strings")
+        prefix = candidate.strip().casefold()
+        if not prefix:
+            raise ActionError(f"{source}: command prefix must not be empty")
+        if any(character.isspace() for character in prefix):
+            raise ActionError(
+                f"{source}: command prefix {candidate!r} must be a single token"
+            )
+        if prefix not in prefixes:
+            prefixes.append(prefix)
+    return tuple(prefixes)

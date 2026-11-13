@@ -35,6 +35,15 @@ class SweRunnerPluginTests(unittest.TestCase):
             self.assertEqual(catalog.resolve("10.0.10.69").name, "69")
             self.assertEqual(catalog.resolve("69").name, "69")
 
+    def test_command_provider_declares_routes_and_single_fallback(self):
+        prefixes = self.registry.command_prefixes()
+        self.assertIn("swe-runner", prefixes)
+        for prefix in ("status", "query", "history", "recent"):
+            self.assertNotIn(prefix, prefixes)
+        fallback = self.registry.command_fallback()
+        self.assertIsNotNone(fallback)
+        self.assertIs(fallback.provider, self.plugin.COMMAND_PROVIDER)
+
     def test_remote_command_and_history(self):
         target = self.plugin.SweTarget(
             name="69",
@@ -67,7 +76,7 @@ class SweRunnerPluginTests(unittest.TestCase):
         self.assertIn("progress: 80.0%", output)
         self.assertIn("success rate: 87.5%", output)
 
-    def test_command_plugin_routes_legacy_queries_without_stealing_check(self):
+    def test_command_plugin_uses_namespace_and_keeps_framework_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = self._write_config(root)
@@ -78,18 +87,63 @@ class SweRunnerPluginTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"SWE_RUNNER_CONFIG": str(config_path)}), mock.patch.object(
                 self.plugin, "_run_process", return_value=process
             ) as run_process:
-                for prompt in ("status", "query", "s", "q", "swe-runner check", "69 check"):
+                for prompt in (
+                    "swe-runner status",
+                    "swe-runner query",
+                    "swe-runner s",
+                    "swe-runner q",
+                    "swe-runner check",
+                    "swe-runner 69 check",
+                    "69 status",
+                ):
                     output = handle_prompt(prompt, catalog, monitors_path=monitors_path)
                     self.assertIn("swe-runner status - 69", output, prompt)
                     self.assertNotIn("--history", run_process.call_args.args[0][-1], prompt)
 
-                for prompt in ("history", "recent", "swe-runner recent", "69 history"):
+                for prompt in (
+                    "swe-runner history",
+                    "swe-runner recent",
+                    "swe-runner 69 history",
+                    "69 history",
+                ):
                     output = handle_prompt(prompt, catalog, monitors_path=monitors_path)
                     self.assertIn("swe-runner history - 69", output, prompt)
                     self.assertIn("--history", run_process.call_args.args[0][-1], prompt)
 
+                output = handle_prompt("status", catalog, monitors_path=monitors_path)
+                self.assertIn("监控检查结果", output)
                 output = handle_prompt("check", catalog, monitors_path=monitors_path)
                 self.assertIn("监控检查结果", output)
+
+    def test_namespaced_status_does_not_change_framework_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "swe-runner.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "targets": {
+                            "69": {
+                                "host": "10.0.10.69",
+                                "queue": "queue-69",
+                                "user": "test",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            catalog = load_action_catalog(self._write_actions(root), registry=self.registry)
+            monitors_path = self._write_monitors(root)
+            with mock.patch.dict(os.environ, {"SWE_RUNNER_CONFIG": str(config_path)}):
+                plugin_output = handle_prompt(
+                    "swe-runner status", catalog, monitors_path=monitors_path
+                )
+                status_output = handle_prompt("status", catalog, monitors_path=monitors_path)
+                check_output = handle_prompt("check", catalog, monitors_path=monitors_path)
+            self.assertIn("需要先配置 swe-runner 默认目标", plugin_output)
+            self.assertIn("监控检查结果", status_output)
+            self.assertIn("监控检查结果", check_output)
 
     def test_swe_runner_action_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,7 +265,8 @@ class SweRunnerPluginTests(unittest.TestCase):
             catalog = load_action_catalog(self._write_actions(root), registry=self.registry)
         output = format_help(catalog)
         self.assertIn("**插件命令**", output)
-        self.assertIn("swe-runner 默认目标状态", output)
+        self.assertIn("`swe-runner status|query|s|q`", output)
+        self.assertIn("- `status`：立即执行全部已启用监控", output)
 
     def _write_config(self, root: Path) -> Path:
         path = root / "swe-runner.json"

@@ -16,4 +16,7 @@ plugins/swe-runner/data/
 !plugins/nodes/**
 plugins/nodes/config/nodes.json
 plugins/nodes/data/
+!plugins/model-manager/
+!plugins/model-manager/**
+plugins/model-manager/config/models.json
 **/__pycache__/

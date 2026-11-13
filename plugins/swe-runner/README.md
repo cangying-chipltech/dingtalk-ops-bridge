@@ -15,6 +15,9 @@ plugins/swe-runner/
 注册 `swe-runner` 动作类型和兼容命令。manifest 中的 `requires: ["nodes"]` 表示它依赖
 nodes 插件提供的 `nodes` 服务；加载器会保证 nodes 先加载。
 
+命令 provider 声明 `status`、`query`、`history`、`recent`、`swe-runner` 等固定前缀，
+并注册唯一 fallback 以兼容 `69 status` 这类目标名动态命令。裸 `check` 被框架保留。
+
 ## 配置
 
 默认读取 `config/swe-runner.json`，也可用 `SWE_RUNNER_CONFIG` 覆盖。推荐目标通过
@@ -52,17 +55,20 @@ SWE_RUNNER_KNOWN_HOSTS=/app/data/known_hosts
 ## 命令
 
 ```text
-status
-history
+swe-runner status
+swe-runner history
+swe-runner 69 status
+swe-runner 10.0.10.69 history
+swe-runner query
+swe-runner recent
 69 status
 10.0.10.69 history
-query
-recent
 swe-runner help
 ```
 
-裸 `check` 始终由框架执行监控检查；旧语义使用 `swe-runner check`、`query` 或
-`<目标> check`。
+插件命令应带 `swe-runner` 前缀；裸 `status`、`check` 始终由框架执行监控检查。若插件
+显式声明并占用裸 `status`，可使用 `bridge status` 调用框架监控。`69 status` 等目标优先
+写法仅作为旧 bridge 兼容。未配置默认目标时，插件命令会返回配置错误。
 
 ## 动作
 

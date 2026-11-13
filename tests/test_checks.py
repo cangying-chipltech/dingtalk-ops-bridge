@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import http.server
+import json
 import socket
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 
-from dingtalk_ops_bridge.checks import MonitorDefinition, run_check
+from dingtalk_ops_bridge.action_api import (
+    PLUGIN_API_VERSION,
+    ActionRegistry,
+    MonitorResult,
+)
+from dingtalk_ops_bridge.checks import (
+    MonitorDefinition,
+    load_monitor_catalog,
+    run_check,
+)
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -84,6 +96,73 @@ class CheckTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_plugin_monitor_definitions_and_check_dispatch(self):
+        class Provider:
+            api_version = PLUGIN_API_VERSION
+            type_name = "plugin-monitor"
+
+            def monitors(self, context):
+                self.context = context
+                return {
+                    "plugin-owned": {
+                        "description": "plugin owned monitor",
+                        "check": {"type": self.type_name, "value": "ok"},
+                        "severity": "critical",
+                    }
+                }
+
+            def validate(self, check):
+                if not check.get("value"):
+                    raise ValueError("value is required")
+
+            def check(self, check, context):
+                return MonitorResult(True, "plugin says ok", f"value={check['value']}")
+
+        provider = Provider()
+        registry = ActionRegistry()
+        registry.register_monitor(provider, source="test-plugin")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "monitors.json"
+            path.write_text(json.dumps({"monitors": {}}), encoding="utf-8")
+            catalog = load_monitor_catalog(path, registry=registry)
+
+        self.assertIn("plugin-owned", catalog.monitors)
+        self.assertEqual(catalog.monitors["plugin-owned"].severity, "critical")
+        result = run_check(
+            catalog.monitors["plugin-owned"],
+            registry=catalog.registry,
+            context=catalog.context,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.message, "plugin says ok")
+
+    def test_plugin_monitor_name_cannot_conflict_with_core_monitor(self):
+        class Provider:
+            api_version = PLUGIN_API_VERSION
+            type_name = "duplicate-monitor"
+
+            def monitors(self, context):
+                return {"shared": {"check": {"type": self.type_name}}}
+
+            def validate(self, check):
+                pass
+
+            def check(self, check, context):
+                return MonitorResult(True, "ok")
+
+        registry = ActionRegistry()
+        registry.register_monitor(Provider(), source="test-plugin")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "monitors.json"
+            path.write_text(
+                json.dumps(
+                    {"monitors": {"shared": {"check": {"type": "command", "command": ["true"]}}}}
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(Exception, "duplicate monitor"):
+                load_monitor_catalog(path, registry=registry)
 
 
 if __name__ == "__main__":
