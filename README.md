@@ -38,6 +38,12 @@ All 7 end-to-end cases passed.
 
 ## 最小部署
 
+主框架和插件分仓库维护。首次部署时先克隆插件仓库：
+
+```bash
+git clone git@github.com:cangying-chipltech/dingtalk-ops-plugins.git plugins
+```
+
 ### 1. 配置钉钉
 
 ```bash
