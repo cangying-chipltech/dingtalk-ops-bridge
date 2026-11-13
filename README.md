@@ -81,9 +81,9 @@ cp config/monitors.example.json config/monitors.json
 
 修改模板中的 URL、端口或检查命令，只保留需要的监控项。
 
-模型日志等业务监控由插件自带。当前 `plugins/model-manager/` 会根据
-`plugins/model-manager/config/models.json` 生成 vLLM 日志监控，不再写入
-`config/monitors.json`。
+模型日志和节点服务等业务监控由插件自带。当前 `plugins/model-manager/` 会根据
+`plugins/model-manager/config/models.json` 生成 vLLM 日志监控和 `new-api` 服务监控，
+不再写入 `config/monitors.json`。
 
 ### 3. 启动
 
@@ -114,6 +114,7 @@ docker logs -f dingtalk-ops-monitor
 | `model list` | 模型管理插件：列出模型和关联监控项 |
 | `model check vllm-27` | 模型管理插件：立即检查模型日志 |
 | `monitor list` | 列出监控项 |
+| `monitor check newapi-status-205` | 检查 205 的 `new-api` 容器和 API |
 | `monitor check api-health` | 立即执行指定检查 |
 | `status` | 立即执行全部已启用监控 |
 | `bridge status` | 显式执行框架监控；即使插件占用 `status` 仍可用 |
@@ -128,7 +129,7 @@ docker logs -f dingtalk-ops-monitor
 | 钉钉凭据、Webhook、并发和超时 | `.env` |
 | 可执行动作和批处理 | `config/actions.json` |
 | 节点登录信息 | `plugins/nodes/config/nodes.json` |
-| 模型实例和日志监控 | `plugins/model-manager/config/models.json` |
+| 模型实例、日志和节点服务监控 | `plugins/model-manager/config/models.json` |
 | swe-runner 插件目标 | `plugins/swe-runner/config/swe-runner.json` |
 | 框架静态监控项 | `config/monitors.json` |
 | 完整配置字段 | `docs/CONFIGURATION.md` |
@@ -158,16 +159,18 @@ run node-login node=web-01
 
 ### model-manager 插件
 
-模型清单、日志路径和告警关键字由 `plugins/model-manager/` 管理。插件通过
-`monitorProvider` 为每个模型生成监控项，并通过 `requires: ["nodes"]` 复用节点登录信息。
-配置位于 `plugins/model-manager/config/models.json`，命令示例：
+模型清单、日志路径、节点服务和告警关键字由 `plugins/model-manager/` 管理。插件通过
+`monitorProvider` 为每个模型生成日志监控、为每个服务生成容器与 HTTP 健康监控，并通过
+`requires: ["nodes"]` 复用节点登录信息。配置位于
+`plugins/model-manager/config/models.json`，命令示例：
 
 ```text
 model list
 model check vllm-27,vllm-31
+monitor check newapi-status-205
 ```
 
-修改模型、节点或日志关键字后重启 `bridge monitor` 即可。配置格式和监控说明见
+修改模型、服务、节点或日志关键字后重启 `bridge monitor` 即可。配置格式和监控说明见
 `plugins/model-manager/README.md`。
 
 ### swe-runner 插件

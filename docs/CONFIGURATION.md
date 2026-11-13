@@ -83,6 +83,7 @@ ROBOT_CLIENT_SECRET=<robot app secret>
 | `batch health` | 并发执行预置动作组 |
 | `model list` | model-manager 插件：列出模型和关联监控项 |
 | `model check vllm-27,vllm-31` | model-manager 插件：立即检查模型日志 |
+| `monitor check newapi-status-205` | 检查 205 的 `new-api` 容器和 API |
 | `monitor list` | 列出监控项 |
 | `monitor check api-health,redis-port` | 立即执行指定检查 |
 | `status` | 框架即时监控检查 |
@@ -191,8 +192,26 @@ chmod 600 data/ssh/id_ed25519_worker
 
 `node` 引用 nodes 插件中的节点，密码和 SSH 参数由节点配置统一管理。`monitorName` 可选；
 省略时监控名为 `model-manager-<模型名>-log`。插件根据模型配置生成 `model-log` 监控项，
-命中 `alertPatterns` 时由框架发送钉钉告警。完整说明见
-`plugins/model-manager/README.md`。
+命中 `alertPatterns` 时由框架发送钉钉告警。
+
+同一配置的 `services` 生成 `node-service` 监控项，用于检查节点上的 Docker 容器和本机 HTTP
+接口。`container` 与 `url` 至少配置一个，`expectedStatus` 默认 200：
+
+```json
+{
+  "services": {
+    "newapi-205": {
+      "node": "hangdian2-205",
+      "container": "new-api",
+      "url": "http://127.0.0.1:3000/api/status",
+      "expectedStatus": 200,
+      "monitorName": "newapi-status-205"
+    }
+  }
+}
+```
+
+完整说明见 `plugins/model-manager/README.md`。
 
 ## swe-runner 插件配置
 
@@ -349,7 +368,7 @@ docker compose restart bridge monitor
 
 `config/monitors.json` 可保留通用 `settings` 和框架内置的 `http`、`tcp`、`command`
 检查。插件也可以通过 manifest 的 `monitorProvider` 自带监控定义；框架会把插件监控与
-此文件合并，同名监控和未知检查类型会在启动期报错。模型日志监控由
+此文件合并，同名监控和未知检查类型会在启动期报错。模型日志和节点服务监控由
 `model-manager` 插件生成，因此默认配置中的 `monitors` 可以为空。
 
 常用格式：
