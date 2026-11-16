@@ -103,7 +103,9 @@ docker logs -f dingtalk-ops-monitor
 
 | 指令 | 作用 |
 | --- | --- |
-| `help` | 显示命令菜单 |
+| `help [命令...]` | 显示命令总览或指定命令的详细帮助 |
+| `help model add` | 查看模型添加参数和示例 |
+| `help service add` | 查看服务添加参数和示例 |
 | `list` | 列出动作和批处理 |
 | `run disk,memory,uptime` | 并发执行多个动作 |
 | `run ping host=10.0.0.12` | 执行带参数动作 |
@@ -114,6 +116,12 @@ docker logs -f dingtalk-ops-monitor
 | `model list` | 模型管理插件：列出模型和关联监控项 |
 | `model check vllm-27` | 模型管理插件：立即检查模型日志 |
 | `model add name=vllm-32 node=hangdian2-32 logPath=/data/applogs/vllm.log alertPatterns='Shutting down'` | 模型管理插件：动态添加模型 |
+| `service list` | 模型管理插件：列出节点服务监控 |
+| `service add name=redis-205 node=hangdian2-205 container=redis intervalSeconds=30` | 模型管理插件：动态添加服务 |
+| `service update name=newapi-205 expectedStatus=204` | 模型管理插件：修改静态或动态服务 |
+| `service remove newapi-205` | 模型管理插件：移出服务，保留定义 |
+| `service restore newapi-205` | 模型管理插件：恢复已移出服务 |
+| `service check newapi-205` | 模型管理插件：立即检查服务 |
 | `monitor list` | 列出监控项 |
 | `monitor check newapi-status-205` | 检查 205 的 `new-api` 容器和 API |
 | `monitor check api-health` | 立即执行指定检查 |
@@ -169,13 +177,19 @@ run node-login node=web-01
 model list
 model check vllm-27,vllm-31
 model add name=vllm-32 node=hangdian2-32 logPath=/data/applogs/vllm.log alertPatterns='Shutting down'
+service add name=redis-205 node=hangdian2-205 container=redis intervalSeconds=30
+service update name=newapi-205 expectedStatus=204 intervalSeconds=120
+service check newapi-205
 monitor check newapi-status-205
 ```
 
 `model add` 将模型写入 `DATA_DIR/model-manager-models.json`，可用
-`MODEL_MANAGER_MODEL_STATE_FILE` 覆盖路径；`bridge` 无需重启，执行
-`docker compose restart monitor` 后加载新增监控。修改静态模型、服务、节点或日志关键字后
-重启 `bridge monitor`。配置格式和监控说明见 `plugins/model-manager/README.md`。
+`MODEL_MANAGER_MODEL_STATE_FILE` 覆盖路径。`service add/update/remove/restore` 写入
+`DATA_DIR/model-manager-services.json`，可用 `MODEL_MANAGER_SERVICE_STATE_FILE` 覆盖。
+`bridge` 无需重启；执行 `docker compose restart monitor` 后加载新增或修改的周期监控。
+`service check` 和 `alert add type=node-service` 会立即读取最新服务定义。修改静态模型、
+服务、节点或日志关键字后重启 `bridge monitor`。配置格式和监控说明见
+`plugins/model-manager/README.md`。
 
 ### swe-runner 插件
 

@@ -154,6 +154,40 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(handle_prompt("other", catalog), "fallback")
             self.assertIn("DingTalk Ops Bridge", handle_prompt("help", catalog))
 
+    def test_help_routes_topics_to_plugin_provider(self):
+        class Routed:
+            api_version = PLUGIN_API_VERSION
+            command_prefixes = ("alpha",)
+
+            def handle(self, prompt, context):
+                return "routed"
+
+            def help(self, topic, context):
+                return f"plugin-help:{topic}"
+
+        registry = ActionRegistry()
+        registry.register(CommandActionProvider())
+        registry.register_command(Routed(), source="routed")
+        with tempfile.TemporaryDirectory() as tmp:
+            actions_path = Path(tmp) / "actions.json"
+            actions_path.write_text(
+                json.dumps({"actions": {"hello": {"command": ["true"]}}}),
+                encoding="utf-8",
+            )
+            catalog = load_action_catalog(actions_path, registry=registry)
+            self.assertEqual(
+                handle_prompt("help alpha add", catalog),
+                "plugin-help:alpha add",
+            )
+            self.assertEqual(
+                handle_prompt("help alpha", catalog),
+                "plugin-help:alpha",
+            )
+            help_output = handle_prompt("help", catalog)
+            self.assertIn("**插件帮助**", help_output)
+            self.assertIn("`help alpha`", help_output)
+            self.assertIn("`alpha help`", help_output)
+
     def test_declining_explicit_route_does_not_fall_through_to_framework(self):
         class StatusRoute:
             api_version = PLUGIN_API_VERSION

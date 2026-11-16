@@ -65,6 +65,10 @@ class CommandTests(unittest.TestCase):
         self.assertIn("- `status`：立即执行全部已启用监控", help_output)
         self.assertIn("- `bridge status`：显式执行框架监控检查", help_output)
         self.assertNotIn("插件未接管时执行监控检查", help_output)
+        self.assertIn("### 命令：run", self._handle("help run"))
+        self.assertIn("`echo`", self._handle("help run"))
+        self.assertIn("### 命令：monitor", self._handle("help monitor"))
+        self.assertIn("未知帮助主题", self._handle("help missing"))
         self.assertIn("`echo`", self._handle("list"))
         self.assertIn("`both`", self._handle("actions"))
 

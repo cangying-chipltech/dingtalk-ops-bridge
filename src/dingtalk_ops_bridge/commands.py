@@ -60,7 +60,7 @@ def handle_prompt(
             return plugin_output
 
     if command in HELP_COMMANDS:
-        return format_help(action_catalog)
+        return format_help(action_catalog, topic=rest)
     if command in LIST_COMMANDS:
         return format_action_list(action_catalog)
     if command in RUN_COMMANDS:
@@ -86,12 +86,16 @@ def handle_prompt(
     )
 
 
-def format_help(catalog: ActionCatalog) -> str:
+def format_help(catalog: ActionCatalog, topic: str | None = None) -> str:
+    requested = (topic or "").strip()
+    if requested:
+        return _format_topic_help(requested, catalog)
     actions = ", ".join(f"`{name}`" for name in sorted(catalog.actions))
     batches = ", ".join(f"`{name}`" for name in sorted(catalog.batches)) or "-"
     plugin_help = _plugin_help_lines(catalog)
+    plugin_help_entries = _plugin_help_entries(catalog)
     commands = [
-        "- `help`：显示帮助",
+        "- `help [命令...]`：显示总览或指定命令的详细帮助",
         "- `list`：列出动作与批处理",
         "- `run <动作>[,<动作>] [key=value ...]`：并发执行动作",
         "- `batch <批处理> [key=value ...]`：并发执行预置动作组",
@@ -111,6 +115,11 @@ def format_help(catalog: ActionCatalog) -> str:
             "**命令**",
             *commands,
             *(["", "**插件命令**", *plugin_help] if plugin_help else []),
+            *(
+                ["", "**插件帮助**", *plugin_help_entries]
+                if plugin_help_entries
+                else []
+            ),
             "",
             f"**动作**：{actions}",
             f"**批处理**：{batches}",
@@ -123,27 +132,216 @@ def format_help(catalog: ActionCatalog) -> str:
             "run ping host=10.0.0.12",
             "batch health",
             "monitor check api-health,redis",
+            "help model add",
             "check",
             "```",
         ]
     )
 
 
+def _format_topic_help(topic: str, catalog: ActionCatalog) -> str:
+    framework_help = _framework_topic_help(topic, catalog)
+    if framework_help is not None:
+        return framework_help
+
+    registration = catalog.registry.command_route(topic)
+    if registration is not None:
+        helper = getattr(registration.provider, "help", None)
+        if callable(helper):
+            try:
+                output = helper(topic, _action_context(catalog))
+            except ActionError as exc:
+                return _usage_error(f"无法加载 `{topic}` 的帮助：{exc}")
+            except Exception as exc:
+                return _usage_error(f"插件帮助执行失败：{exc}")
+            if isinstance(output, str) and output.strip():
+                return output
+            return _unknown_topic_help(topic, catalog)
+        lines = _provider_help_lines(registration.provider)
+        if lines:
+            return "\n".join(
+                [
+                    "### 帮助",
+                    "",
+                    f"主题：`{topic}`",
+                    "",
+                    *lines,
+                    "",
+                    "该插件尚未提供更详细的子命令帮助。",
+                ]
+            )
+
+    return _unknown_topic_help(topic, catalog)
+
+
+def _unknown_topic_help(topic: str, catalog: ActionCatalog) -> str:
+    topics = sorted(
+        {
+            "help",
+            "list",
+            "run",
+            "batch",
+            "monitor",
+            "check",
+            "status",
+            "bridge",
+            *catalog.registry.command_prefixes(),
+        }
+    )
+    return "\n".join(
+        [
+            "### 未知帮助主题",
+            "",
+            f"未找到 `{_inline(topic)}` 的帮助。",
+            "使用 `help` 查看总览，或发送 `help <命令>` 查询详细帮助。",
+            "",
+            f"**可用主题**：{', '.join(f'`{item}`' for item in topics)}",
+        ]
+    )
+
+
+def _framework_topic_help(topic: str, catalog: ActionCatalog) -> str | None:
+    parts = topic.split(maxsplit=2)
+    first = parts[0].casefold()
+    second = parts[1].casefold() if len(parts) > 1 else ""
+
+    if first in HELP_COMMANDS:
+        return "\n".join(
+            [
+                "### 命令：help",
+                "",
+                "- `help`：显示可用命令总览",
+                "- `help <命令...>`：显示框架或插件命令的详细帮助",
+                "",
+                "示例：`help run`、`help model add`、`help alert add model-log`。",
+            ]
+        )
+    if first in LIST_COMMANDS:
+        return "\n".join(
+            [
+                "### 命令：list",
+                "",
+                "- `list`：列出动作和批处理",
+                "- `run <动作>`：执行一个或多个动作",
+                "- `batch <批处理>`：执行预置动作组",
+                "",
+                "动作定义位于框架 `config/actions.json` 和插件 `actionsFile`。",
+            ]
+        )
+    if first in RUN_COMMANDS:
+        actions = ", ".join(f"`{name}`" for name in sorted(catalog.actions)) or "-"
+        return "\n".join(
+            [
+                "### 命令：run",
+                "",
+                "用法：`run <动作>[,<动作>...] [key=value ...]`",
+                "",
+                "- 多个动作使用逗号分隔并并发执行。",
+                "- 参数只能使用动作声明过的字段。",
+                f"- 当前动作：{actions}",
+                "",
+                "示例：`run disk,uptime`、`run node-login node=web-01`。",
+            ]
+        )
+    if first in BATCH_COMMANDS:
+        batches = ", ".join(f"`{name}`" for name in sorted(catalog.batches)) or "-"
+        return "\n".join(
+            [
+                "### 命令：batch",
+                "",
+                "用法：`batch <批处理> [key=value ...]`",
+                "",
+                f"- 当前批处理：{batches}",
+                "- 批处理中的动作并发执行，参数会传给每个动作。",
+                "",
+                "示例：`batch health`、`batch node-health node=web-01`。",
+            ]
+        )
+    if first in MONITOR_COMMANDS:
+        return "\n".join(
+            [
+                "### 命令：monitor",
+                "",
+                "- `monitor list`：列出框架和插件提供的监控项",
+                "- `monitor check [名称,...]`：立即执行指定或全部已启用监控",
+                "- `check` / `status`：立即执行全部已启用监控",
+                "",
+                "监控定义可以由框架配置或插件的 `monitorProvider` 提供。",
+            ]
+        )
+    if first == "bridge":
+        if not second or second in STATUS_COMMANDS:
+            return "\n".join(
+                [
+                    "### 命令：bridge",
+                    "",
+                    "- `bridge status`：显式执行框架监控检查",
+                    "",
+                    "该命令始终由框架处理，即使插件声明了 `status` 前缀。",
+                ]
+            )
+        return None
+    if first in STATUS_COMMANDS:
+        if first in {"check", "检查"}:
+            return "\n".join(
+                [
+                    "### 命令：check",
+                    "",
+                    "- `check`：立即执行全部已启用监控，始终由框架处理",
+                    "- `monitor check <名称,...>`：仅执行指定监控",
+                    "- `bridge status`：与 `check` 等价的显式框架入口",
+                ]
+            )
+        route = catalog.registry.command_route("status")
+        lines = ["### 命令：status", ""]
+        if route is None:
+            lines.append("- `status`：立即执行全部已启用监控")
+        else:
+            lines.append(f"- `status` 当前由插件 `{route.source}` 接管")
+            lines.append("- `bridge status`：始终执行框架监控检查")
+        lines.extend(["", "示例：`status`、`bridge status`。"])
+        return "\n".join(lines)
+    return None
+
+
 def _plugin_help_lines(catalog: ActionCatalog) -> list[str]:
     lines: list[str] = []
     for provider in catalog.registry.commands():
-        getter = getattr(provider, "help_lines", None)
-        if not callable(getter):
-            continue
-        try:
-            value = getter()
-        except Exception:
-            continue
-        if isinstance(value, str):
-            lines.append(value)
-        else:
-            lines.extend(str(line) for line in value)
+        lines.extend(_provider_help_lines(provider))
     return lines
+
+
+def _plugin_help_entries(catalog: ActionCatalog) -> list[str]:
+    entries = [
+        "- 发送 `help <插件前缀> [子命令]` 或 `<插件前缀> help [子命令]` 查询详细帮助。"
+    ]
+    for registration in catalog.registry.command_registrations():
+        if not registration.prefixes:
+            continue
+        prefix = registration.prefixes[0]
+        line = f"- `help {prefix}` / `{prefix} help`：查看插件详细帮助"
+        others = registration.prefixes[1:]
+        if others:
+            aliases = ", ".join(f"`{item}`" for item in others)
+            line += f"（同插件入口：{aliases}）"
+        entries.append(line)
+    return entries if len(entries) > 1 else []
+
+
+def _provider_help_lines(provider: object) -> list[str]:
+    getter = getattr(provider, "help_lines", None)
+    if not callable(getter):
+        return []
+    try:
+        value = getter()
+    except Exception:
+        return []
+    if isinstance(value, str):
+        return [value]
+    try:
+        return [str(line) for line in value]
+    except TypeError:
+        return []
 
 
 def format_action_list(catalog: ActionCatalog) -> str:

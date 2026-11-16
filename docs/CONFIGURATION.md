@@ -71,7 +71,8 @@ ROBOT_CLIENT_SECRET=<robot app secret>
 
 | 指令 | 说明 |
 | --- | --- |
-| `help` | 显示命令菜单 |
+| `help [命令...]` | 显示命令总览或指定命令的详细帮助 |
+| `help model add` | 查看模型添加参数和示例 |
 | `list` | 列出动作和批处理 |
 | `nodes` | nodes 插件：列出节点清单，不显示密码 |
 | `run disk,memory,uptime` | 并发执行多个动作 |
@@ -458,6 +459,23 @@ docker compose restart bridge monitor
 例如 model-manager 使用 `{"type": "model-log", "model": "vllm-27"}`。插件检查的异常、
 恢复、重复提醒和状态持久化与内置检查一致。
 
+### model-manager 动态服务
+
+model-manager 支持通过 `service add`、`service update`、`service remove` 和
+`service restore` 管理 `node-service` 定义。动态服务默认保存在
+`DATA_DIR/model-manager-services.json`，可用 `MODEL_MANAGER_SERVICE_STATE_FILE` 覆盖；
+`service update` 也可覆盖 `plugins/model-manager/config/models.json` 中的静态服务。
+
+```text
+service add name=redis-205 node=hangdian2-205 container=redis intervalSeconds=30
+service update name=newapi-205 expectedStatus=204 intervalSeconds=120
+service check newapi-205
+```
+
+新定义会立即用于 `service check` 和 `alert add type=node-service`。周期监控由 monitor
+进程在启动时加载，因此新增、更新或恢复服务后需执行 `docker compose restart monitor`。
+完整参数见 `plugins/model-manager/README.md` 和 `help service add`。
+
 ## 告警与状态
 
 - 正常到失败：立即发送异常通知。
@@ -472,5 +490,6 @@ docker compose restart bridge monitor
 PYTHONPATH=src python3 -m dingtalk_ops_bridge validate
 PYTHONPATH=src python3 -m dingtalk_ops_bridge command help
 PYTHONPATH=src python3 -m dingtalk_ops_bridge command 'model list'
+PYTHONPATH=src python3 -m dingtalk_ops_bridge command 'service list'
 PYTHONPATH=src python3 -m dingtalk_ops_bridge monitor --once --dry-run
 ```

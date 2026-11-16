@@ -184,6 +184,13 @@ class CommandProvider(Protocol):
         """Handle a command prompt, or return None when it does not apply."""
 
 
+class CommandHelpProvider(Protocol):
+    """Optional command-provider extension for detailed topic help."""
+
+    def help(self, topic: str, context: ActionContext) -> str | None:
+        """Return help for a full command topic, or None when unsupported."""
+
+
 class MonitorProvider(Protocol):
     api_version: int
     type_name: str

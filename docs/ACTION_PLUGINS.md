@@ -237,9 +237,25 @@ COMMANDS = Commands()
   返回明确错误，不再交给框架或 fallback。`handle()` 返回 Markdown 字符串表示命令已完成。
 - 只有未命中前缀、进入 fallback 的 provider 返回 `None` 时，框架才继续处理该命令。
 
-`help_lines()` 可选，返回字符串或字符串列表，用于汇总到 `help` 输出。swe-runner 使用
-`command_prefixes = ("swe-runner",)` 承接带插件前缀的命令，并用唯一 fallback 兼容
-`69 status` 这类由配置目标名决定的旧命令。
+`help_lines()` 可选，返回字符串或字符串列表，用于汇总到 `help` 总览。插件还可以实现
+`help(topic, context)`，由框架把 `help <插件前缀> ...` 的完整主题交给对应插件；这样
+`help model add`、`help alert add model-log` 等子命令帮助由插件自行维护，框架不需要
+硬编码业务命令。`help()` 返回字符串；不支持的子主题返回 `None`，框架会回退到
+`help_lines()` 或提示未知主题。
+
+总帮助会根据注册的 `command_prefixes` 自动生成插件帮助入口，例如
+`help alert`、`help node`、`help swe-runner`。新增插件只要声明前缀，就会自动出现在
+总帮助中，不需要修改框架。
+
+```python
+def help(self, topic, context):
+    if topic == "my-check status":
+        return "### my-check status\n\n检查目标状态。"
+    return None
+```
+
+swe-runner 使用 `command_prefixes = ("swe-runner",)` 承接带插件前缀的命令，并用唯一
+fallback 兼容 `69 status` 这类由配置目标名决定的旧命令。
 
 ## Monitor Provider
 
