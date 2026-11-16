@@ -113,6 +113,7 @@ docker logs -f dingtalk-ops-monitor
 | `batch health` | 执行预置动作组 |
 | `model list` | 模型管理插件：列出模型和关联监控项 |
 | `model check vllm-27` | 模型管理插件：立即检查模型日志 |
+| `model add name=vllm-32 node=hangdian2-32 logPath=/data/applogs/vllm.log alertPatterns='Shutting down'` | 模型管理插件：动态添加模型 |
 | `monitor list` | 列出监控项 |
 | `monitor check newapi-status-205` | 检查 205 的 `new-api` 容器和 API |
 | `monitor check api-health` | 立即执行指定检查 |
@@ -167,11 +168,14 @@ run node-login node=web-01
 ```text
 model list
 model check vllm-27,vllm-31
+model add name=vllm-32 node=hangdian2-32 logPath=/data/applogs/vllm.log alertPatterns='Shutting down'
 monitor check newapi-status-205
 ```
 
-修改模型、服务、节点或日志关键字后重启 `bridge monitor` 即可。配置格式和监控说明见
-`plugins/model-manager/README.md`。
+`model add` 将模型写入 `DATA_DIR/model-manager-models.json`，可用
+`MODEL_MANAGER_MODEL_STATE_FILE` 覆盖路径；`bridge` 无需重启，执行
+`docker compose restart monitor` 后加载新增监控。修改静态模型、服务、节点或日志关键字后
+重启 `bridge monitor`。配置格式和监控说明见 `plugins/model-manager/README.md`。
 
 ### swe-runner 插件
 

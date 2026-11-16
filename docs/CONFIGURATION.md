@@ -83,6 +83,7 @@ ROBOT_CLIENT_SECRET=<robot app secret>
 | `batch health` | 并发执行预置动作组 |
 | `model list` | model-manager 插件：列出模型和关联监控项 |
 | `model check vllm-27,vllm-31` | model-manager 插件：立即检查模型日志 |
+| `model add name=vllm-32 node=hangdian2-32 logPath=/data/applogs/vllm.log alertPatterns='Shutting down'` | model-manager 插件：动态添加模型 |
 | `monitor check newapi-status-205` | 检查 205 的 `new-api` 容器和 API |
 | `monitor list` | 列出监控项 |
 | `monitor check api-health,redis-port` | 立即执行指定检查 |
@@ -177,7 +178,10 @@ chmod 600 data/ssh/id_ed25519_worker
       "node": "hangdian2-27",
       "logPath": "/data/applogs/vllm.log",
       "tailLines": 10,
-      "alertPatterns": ["No available shared memory broadcast"],
+      "alertPatterns": [
+        "No available shared memory broadcast",
+        "Shutting down"
+      ],
       "monitorName": "vllm-shared-memory-27",
       "intervalSeconds": 60,
       "timeoutSeconds": 20,
@@ -193,6 +197,12 @@ chmod 600 data/ssh/id_ed25519_worker
 `node` 引用 nodes 插件中的节点，密码和 SSH 参数由节点配置统一管理。`monitorName` 可选；
 省略时监控名为 `model-manager-<模型名>-log`。插件根据模型配置生成 `model-log` 监控项，
 命中 `alertPatterns` 时由框架发送钉钉告警。
+
+运行时也可用 `model add` 添加模型；动态定义默认写入
+`$DATA_DIR/model-manager-models.json`（容器内为 `/app/data/model-manager-models.json`），
+可用 `MODEL_MANAGER_MODEL_STATE_FILE` 覆盖路径。`bridge` 会立即读取动态模型，执行
+`docker compose restart monitor` 后后台监控加载新增告警项。`model list` 会标记来源，
+重名、未知节点或监控名冲突会被拒绝。
 
 同一配置的 `services` 生成 `node-service` 监控项，用于检查节点上的 Docker 容器和本机 HTTP
 接口。`container` 与 `url` 至少配置一个，`expectedStatus` 默认 200：
